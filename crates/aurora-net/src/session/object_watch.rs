@@ -13,6 +13,10 @@
 //! - Object update blocks the parser rejects are counted and the first few
 //!   described (`rejected`): they were dropped without a trace, while the
 //!   packet that held them is acknowledged.
+//! - The worn objects an avatar's appearance lists (AttachmentBlock, the
+//!   objects' own ids) are followed: `ATTACHMENTS_AFTER` later, an avatar
+//!   still missing some is reported with what came of each (received with
+//!   which parent, deleted by a KillObject, or never received).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -24,6 +28,22 @@ pub(super) const LATE: Duration = Duration::from_secs(10);
 pub(super) const REPORT_EVERY: Duration = Duration::from_secs(10);
 /// Rejected blocks described in the log, per session (then only counted).
 const DESCRIBED: u32 = 20;
+/// How long after its appearance an avatar's worn objects are checked
+/// (the loading screen's limit, scene/loading.rs `MAX_WAIT`).
+pub(super) const ATTACHMENTS_AFTER: Duration = Duration::from_secs(60);
+/// Objects remembered by id (oldest forgotten past it).
+const SEEN_MAX: usize = 300_000;
+/// Avatar reports per session.
+const AVATARS_REPORTED: u32 = 40;
+/// The avatar PCode (LL_PCODE_LEGACY_AVATAR).
+const PCODE_AVATAR: u8 = 47;
+
+/// What came of an object, by id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    local_id: u32,
+    parent_id: u32,
+}
 
 #[derive(Default)]
 pub(super) struct ObjectWatch {
@@ -35,6 +55,16 @@ pub(super) struct ObjectWatch {
     total_late: u64,
     rejected: u64,
     described: u32,
+    /// Every object received (full, compressed or a cache hit), by id.
+    seen: HashMap<uuid::Uuid, Seen>,
+    /// Avatars by id: their local id.
+    avatars: HashMap<uuid::Uuid, u32>,
+    /// Local ids a KillObject deleted.
+    killed: std::collections::HashSet<u32>,
+    /// Per avatar: the worn objects its last appearance listed, when, and
+    /// whether it was reported.
+    listed: HashMap<uuid::Uuid, (Vec<uuid::Uuid>, Instant, bool)>,
+    avatars_reported: u32,
 }
 
 /// What `report` found: objects that are late, per simulator.
@@ -118,6 +148,71 @@ impl ObjectWatch {
     pub fn rejected_count(&self) -> u64 {
         self.rejected
     }
+
+    /// An avatar's appearance listed these worn objects.
+    pub fn appearance(&mut self, avatar: uuid::Uuid, worn: Vec<uuid::Uuid>, now: Instant) {
+        if worn.is_empty() {
+            self.listed.remove(&avatar);
+        } else {
+            self.listed.insert(avatar, (worn, now, false));
+        }
+    }
+
+    /// An object came (full or compressed update, or a cache hit).
+    pub fn object(&mut self, id: uuid::Uuid, local_id: u32, parent_id: u32, pcode: u8) {
+        if self.seen.len() >= SEEN_MAX && !self.seen.contains_key(&id) {
+            self.seen.clear();
+        }
+        self.seen.insert(id, Seen { local_id, parent_id });
+        if pcode == PCODE_AVATAR {
+            self.avatars.insert(id, local_id);
+        }
+    }
+
+    pub fn killed(&mut self, local_ids: impl IntoIterator<Item = u32>) {
+        self.killed.extend(local_ids);
+    }
+
+    /// The avatars still missing some of their listed worn objects
+    /// `ATTACHMENTS_AFTER` after their appearance, once each.
+    pub fn attachment_report(&mut self, now: Instant) -> Vec<String> {
+        let mut out = Vec::new();
+        for (avatar, (worn, at, reported)) in &mut self.listed {
+            if *reported || now.duration_since(*at) < ATTACHMENTS_AFTER || self.avatars_reported >= AVATARS_REPORTED {
+                continue;
+            }
+            *reported = true;
+            let avatar_local = self.avatars.get(avatar).copied();
+            let (mut on_it, mut elsewhere, mut deleted) = (0, Vec::new(), 0);
+            let mut never = Vec::new();
+            for id in worn.iter() {
+                match self.seen.get(id) {
+                    Some(s) if self.killed.contains(&s.local_id) => deleted += 1,
+                    Some(s) if Some(s.parent_id) == avatar_local => on_it += 1,
+                    Some(s) => elsewhere.push(s.parent_id),
+                    None => never.push(*id),
+                }
+            }
+            if on_it == worn.len() {
+                continue;
+            }
+            self.avatars_reported += 1;
+            out.push(format!(
+                "avatar {avatar} (local id {}): {} worn objects listed, {on_it} received on it, {} received with another parent {:?}, {deleted} deleted by KillObject, {} never received{}",
+                avatar_local.map_or_else(|| "unknown".to_string(), |l| l.to_string()),
+                worn.len(),
+                elsewhere.len(),
+                elsewhere.iter().take(4).collect::<Vec<_>>(),
+                never.len(),
+                if never.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (e.g. {})", never.iter().take(3).map(|u| u.to_string()).collect::<Vec<_>>().join(", "))
+                }
+            ));
+        }
+        out
+    }
 }
 
 /// What can be read of a rejected compressed block: its id, local id, PCode
@@ -186,6 +281,51 @@ mod tests {
         let described = (0..30).filter(|_| w.rejected()).count();
         assert_eq!(described, DESCRIBED as usize);
         assert_eq!(w.rejected_count(), 30);
+    }
+
+    #[test]
+    fn an_avatar_missing_worn_objects_is_reported_once_with_their_fate() {
+        let t0 = Instant::now();
+        let mut w = ObjectWatch::default();
+        let (avatar, on_it, stale, gone, never) = (
+            uuid::Uuid::from_u128(1),
+            uuid::Uuid::from_u128(2),
+            uuid::Uuid::from_u128(3),
+            uuid::Uuid::from_u128(4),
+            uuid::Uuid::from_u128(5),
+        );
+        w.object(avatar, 100, 0, PCODE_AVATAR);
+        w.appearance(avatar, vec![on_it, stale, gone, never], t0);
+        w.object(on_it, 101, 100, 9);
+        w.object(stale, 102, 77, 9);
+        w.object(gone, 103, 100, 9);
+        w.killed([103]);
+        assert!(w.attachment_report(t0 + Duration::from_secs(1)).is_empty(), "too early");
+        let r = w.attachment_report(t0 + ATTACHMENTS_AFTER);
+        assert_eq!(r.len(), 1);
+        let line = &r[0];
+        for part in [
+            "(local id 100)",
+            "4 worn objects listed",
+            "1 received on it",
+            "1 received with another parent [77]",
+            "1 deleted by KillObject",
+            "1 never received",
+        ] {
+            assert!(line.contains(part), "{part} in {line}");
+        }
+        assert!(w.attachment_report(t0 + ATTACHMENTS_AFTER * 2).is_empty(), "once");
+    }
+
+    #[test]
+    fn a_complete_avatar_is_not_reported() {
+        let t0 = Instant::now();
+        let mut w = ObjectWatch::default();
+        let (avatar, worn) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+        w.object(avatar, 100, 0, PCODE_AVATAR);
+        w.appearance(avatar, vec![worn], t0);
+        w.object(worn, 101, 100, 9);
+        assert!(w.attachment_report(t0 + ATTACHMENTS_AFTER).is_empty());
     }
 
     #[test]

@@ -722,6 +722,9 @@ impl Session<'_> {
     /// Objects asked for (cache misses) and not received after
     /// `object_watch::LATE`: logged, once each (#1858).
     fn report_late_objects(&mut self, now: Instant) {
+        for line in self.object_watch.attachment_report(now) {
+            log::warn!("{line}");
+        }
         let Some(late) = self.object_watch.report(now) else {
             return;
         };
@@ -3858,6 +3861,9 @@ impl Session<'_> {
                 }
             }
             self.object_watch.received(from, objects.iter().map(|o| o.local_id));
+            for o in &objects {
+                self.object_watch.object(o.full_id, o.local_id, o.parent_id, o.pcode);
+            }
             self.attach_queue
                 .observe(objects.iter().map(|o| o.name_values.as_str()), Instant::now());
             self.sh.stats.objects_full.fetch_add(objects.len() as u64, Ordering::Relaxed);
@@ -3898,6 +3904,9 @@ impl Session<'_> {
                 }
             }
             self.object_watch.received(from, objects.iter().map(|o| o.local_id));
+            for o in &objects {
+                self.object_watch.object(o.full_id, o.local_id, o.parent_id, o.pcode);
+            }
             self.attach_queue
                 .observe(objects.iter().map(|o| o.name_values.as_str()), Instant::now());
             self.sh.stats.objects_full.fetch_add(objects.len() as u64, Ordering::Relaxed);
@@ -3952,6 +3961,9 @@ impl Session<'_> {
                     }
                     None => misses.push(o.id),
                 }
+            }
+            for o in &hits {
+                self.object_watch.object(o.full_id, o.local_id, o.parent_id, o.pcode);
             }
             self.sh.stats.object_cache_hits.fetch_add(hits.len() as u64, Ordering::Relaxed);
             self.sh.stats.object_cache_misses.fetch_add(misses.len() as u64, Ordering::Relaxed);
@@ -4022,6 +4034,7 @@ impl Session<'_> {
         } else if id == KillObject::ID {
             let m: KillObject = pkt.decode()?;
             crate::probe::objects(crate::probe::ObjectKind::Killed, m.object_data.len());
+            self.object_watch.killed(m.object_data.iter().map(|o| o.id));
             emit(
                 self.sh,
                 NetEvent::ObjectsKilled {
@@ -4420,6 +4433,11 @@ impl Session<'_> {
             );
         } else if id == msgs::AvatarAppearance::ID {
             let m: msgs::AvatarAppearance = pkt.decode()?;
+            // the worn objects it lists, followed for #1858 (object_watch)
+            let mut worn: Vec<_> = m.attachment_block.iter().filter(|a| !a.id.is_nil()).map(|a| a.id).collect();
+            worn.sort_unstable();
+            worn.dedup();
+            self.object_watch.appearance(m.sender.id, worn, Instant::now());
             emit(
                 self.sh,
                 NetEvent::Appearance(crate::types::AvatarAppearance {
