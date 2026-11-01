@@ -408,6 +408,7 @@ mod tests {
             inventory_callbacks: HashMap::new(),
             inventory_copies: Default::default(),
             attach_queue: Default::default(),
+            object_watch: Default::default(),
             inventory_merchant_pending: false,
             next_inventory_callback: 40,
         };

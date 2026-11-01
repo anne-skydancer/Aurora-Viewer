@@ -530,9 +530,28 @@ impl Scene {
             }
             if t.timed_out {
                 // shown by the time limit: what it was waiting for is the
-                // cause to look at
+                // cause to look at. Its worn objects missing (#1858): the
+                // objects anywhere that name its local id as their parent
+                // tell whether they came and were linked elsewhere (another
+                // region's key) or never came.
+                let named = if worn < announced {
+                    let (here, elsewhere) = world
+                        .objects
+                        .iter()
+                        .filter(|(i, c)| *i != idx && c.parent_id == o.key.local_id)
+                        .fold(
+                            (0, 0),
+                            |(h, e), (_, c)| if c.key.region == o.key.region { (h + 1, e) } else { (h, e + 1) },
+                        );
+                    format!(
+                        "; objects naming local id {} as parent: {here} in its region, {elsewhere} elsewhere",
+                        o.key.local_id
+                    )
+                } else {
+                    String::new()
+                };
                 log::warn!(
-                    "avatar {id}{own} shown by the {MAX_WAIT:.0} s limit after {:.1} s: {done}/{total} parts, worn objects {worn}{} (waited for: {}), still missing [{}]; {}",
+                    "avatar {id}{own} shown by the {MAX_WAIT:.0} s limit after {:.1} s: {done}/{total} parts, worn objects {worn}{} (waited for: {}), still missing [{}]; {}{named}",
                     t.waited,
                     listed(),
                     t.waiting,
