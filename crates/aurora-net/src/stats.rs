@@ -75,6 +75,10 @@ pub struct NetStats {
     pub seq_gaps: AtomicU64,
     pub seq_late: AtomicU64,
     pub agent_updates: AtomicU64,
+    /// LogoutRequests sent, over the whole life of the client: a logout
+    /// asked from outside the session's thread (the computer going to
+    /// sleep, `LogoutHandle`) waits for the count to move.
+    pub logout_requests: AtomicU64,
     /// Zero-coded packets received, their received bytes and their bytes
     /// once decoded (LLMessageSystem's mCompressedPacketsIn,
     /// mCompressedBytesIn and mUncompressedBytesIn), and the packets that
