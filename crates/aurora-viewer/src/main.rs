@@ -76,6 +76,7 @@ mod open_path;
 mod overlay_hooks;
 mod own_motion;
 mod physics_editor;
+mod power;
 mod raw_mouse;
 mod report_abuse;
 mod scene;
@@ -232,6 +233,8 @@ fn run_viewer() -> anyhow::Result<()> {
     }
     let mut app = app::App::new()?;
     let result = event_loop.run_app(app.as_mut());
+    // nothing asked of the system's power any more, on every way out
+    power::release();
     // later launches no longer hand their link to this closing viewer
     slurl_handoff::release();
     // the pipelines compiled since the last save (made after the start:

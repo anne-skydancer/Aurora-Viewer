@@ -37,6 +37,7 @@ mod movelock;
 mod particle_editor;
 mod portals;
 mod poser;
+mod power;
 mod sound_explorer;
 // Bug report form (disabled, see main.rs):
 // mod bug_report;
@@ -722,6 +723,10 @@ pub struct App {
     external: external_links::ExternalLinks,
     /// AURORA_DEMO_LINK: a silence of the region to show, or a lost link.
     demo_link_health: Option<link_health::LinkHealthDemo>,
+    /// AURORA_DEMO_SLEEP: the computer's sleep at a frame.
+    demo_sleep: Option<power::SleepDemo>,
+    /// Whether the session a sleep would log out is set (app/power.rs).
+    power_logged_in: bool,
     /// AURORA_DEMO_SLURLS: region lookups the demo server answers late.
     demo_lookups: Vec<(Instant, NetCommand)>,
     /// The object of an `objectim` link clicked (LLInspectRemoteObject).
@@ -1525,6 +1530,8 @@ impl App {
             friends_only_account: uuid::Uuid::nil(),
             external: external_links::ExternalLinks::start(),
             demo_link_health: link_health::LinkHealthDemo::from_env(),
+            demo_sleep: power::SleepDemo::from_env(),
+            power_logged_in: false,
             demo_lookups: Vec::new(),
             remote_object: None,
             app_link_parcels: HashSet::new(),
@@ -3741,7 +3748,9 @@ impl App {
             }
             NetEvent::LoggedOut => {
                 self.session_ended();
-                self.back_to_login(None);
+                // with the note when the computer's sleep asked for it
+                let note = self.sleep_logout_note();
+                self.back_to_login(note);
             }
             // both windows estimate L$: the one that asked takes the answer
             NetEvent::CurrencyQuote { amount, result } => {
@@ -5672,6 +5681,8 @@ impl App {
             self.net.send(NetCommand::Logout);
             std::thread::sleep(Duration::from_millis(300));
         }
+        // the computer may sleep again, the screen go off (power.rs)
+        crate::power::release();
         // the last viewer statistics report, posted before the LogoutRequest
         // (here or by the exit prompt's logout), may still be on its way: the
         // process must not end under it (the Legacy Viewer's finishes while
@@ -8662,6 +8673,8 @@ impl App {
         }
         // AURORA_DEMO_LINK's lost link, before the frame takes the window
         self.demo_link_lost();
+        // the system's power, and AURORA_DEMO_SLEEP (app/power.rs)
+        self.power_frame();
         let Some(mut gfx) = self.gfx.take() else {
             return;
         };
