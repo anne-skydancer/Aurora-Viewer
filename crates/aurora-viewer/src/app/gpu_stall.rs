@@ -357,7 +357,11 @@ mod tests {
     fn only_a_long_gap_between_two_passes_is_a_pause() {
         let now = Instant::now();
         assert_eq!(pause_gap(None, now), None, "the first pass");
-        assert_eq!(pause_gap(Some(now - Duration::from_millis(50)), now), None, "a real stall's polling");
+        assert_eq!(
+            pause_gap(Some(now - Duration::from_millis(50)), now),
+            None,
+            "a real stall's polling"
+        );
         assert_eq!(pause_gap(Some(now - Duration::from_secs(16)), now), Some(Duration::from_secs(16)));
     }
 

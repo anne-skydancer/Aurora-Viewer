@@ -74,7 +74,10 @@ impl App {
         }
         demo.done = true;
         let seconds = demo.seconds;
-        log::info!("AURORA_DEMO_SLEEP: the computer goes to sleep for {seconds} s at frame {}", self.frame_count);
+        log::info!(
+            "AURORA_DEMO_SLEEP: the computer goes to sleep for {seconds} s at frame {}",
+            self.frame_count
+        );
         crate::power::suspending();
         let pause = Duration::from_secs_f32(seconds);
         crate::crash::expect_pause(pause);

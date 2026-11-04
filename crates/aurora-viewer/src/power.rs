@@ -288,7 +288,10 @@ mod tests {
 
     #[test]
     fn the_screen_follows_its_setting_alone_and_the_two_are_independent() {
-        assert!(wishes(true, false, false).screen_on, "the login screen too: Windows only tells the window in front");
+        assert!(
+            wishes(true, false, false).screen_on,
+            "the login screen too: Windows only tells the window in front"
+        );
         assert!(!wishes(true, false, true).awake);
         assert!(!wishes(false, true, true).screen_on);
     }
