@@ -894,6 +894,17 @@ impl Renderer {
         self.stalled.then(|| owner.held_for()).flatten()
     }
 
+    /// The whole process stood still for `gap` (the computer slept, a
+    /// debugger held it; app/gpu_stall.rs sees it as a gap between two
+    /// frames): the GPU did not keep the frame for that long, the stall
+    /// clock skips it. Nothing else changes: a frame still held after the
+    /// gap goes on being timed from there.
+    pub fn forgive_pause(&self, gap: Duration) {
+        if let Host::Thread { owner, .. } = &self.host {
+            owner.forgive(gap);
+        }
+    }
+
     /// Before a frame is built: wait for the render thread to be free, at
     /// most [`STALL_AFTER`] (then [`STALL_POLL`] while it stays stuck).
     /// False when it is still held: the stores keep their writes for the
