@@ -495,6 +495,9 @@ pub struct App {
     /// Last walk-key press (for double-tap running) and the active temporary run.
     last_tap: Option<(u8, Instant)>,
     temp_run: Option<u8>,
+    /// `@fly` was held on the previous RLVa update: landing is edge-triggered,
+    /// as RlvUIEnabler::onToggleMovement runs when the behaviour is added.
+    rlva_fly_held: bool,
     /// "Always run" (Ctrl+R).
     always_run: bool,
     /// The Controls window (`ui/controls.rs`), the keys its buttons and
@@ -1467,6 +1470,7 @@ impl App {
             cursor_pos: (0.0, 0.0),
             last_tap: None,
             temp_run: None,
+            rlva_fly_held: false,
             always_run: false,
             controls_ui: Default::default(),
             controls_held: Vec::new(),
