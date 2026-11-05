@@ -14578,6 +14578,13 @@ impl App {
         let sit_locked = !self.world.rlva_allows_command(&NetCommand::OneShotControl(sit), uuid::Uuid::nil());
         ui.ctx()
             .data_mut(|data| data.insert_temp(ui::bars::rlva_sit_locked_id(), sit_locked));
+        // Agent.enableFlying for the toolbar, enable_fly_land-like for the menu
+        let fly_locked = !crate::autopilot::can_takeoff(&self.world);
+        let fly_menu_locked = !crate::autopilot::fly_or_land_enabled(&self.world);
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(ui::bars::fly_locked_id(), fly_locked);
+            data.insert_temp(ui::bars::fly_menu_locked_id(), fly_menu_locked);
+        });
         self.world.refresh_rlva_privacy();
         self.notif_ui.privacy = self.world.rlva_privacy.clone();
         let mut a = UiActions::default();

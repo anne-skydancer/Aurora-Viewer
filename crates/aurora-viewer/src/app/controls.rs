@@ -19,7 +19,7 @@ impl App {
             shots: &self.settings.camera_shots,
             flying: self.world.agent.flying,
             always_run: self.always_run,
-            fly_locked: self.world.rlva.has("fly"),
+            fly_locked: !crate::autopilot::can_fly(&self.world),
             run_locked: self.world.rlva.has("alwaysrun"),
             seated: self.world.agent.seated,
             mouselook: self.camera.mouselook(),
