@@ -144,10 +144,25 @@ impl App {
         if self.world.rlva.has("showworldmap") {
             self.panels.world_map = false;
         }
-        if self.world.rlva.has("alwaysrun") && self.always_run {
+        // RlvUIEnabler::onToggleMovement (indra/newview/rlvui.cpp), run on
+        // every add or removal of fly, alwaysrun and temprun. Polled each
+        // frame, so every source (attachment, console, relay, restored on
+        // relog) lands the avatar the way "Stop flying" does.
+        let clear = MovementClear::new(
+            (
+                self.world.rlva.has("fly"),
+                self.world.rlva.has("alwaysrun"),
+                self.world.rlva.has("temprun"),
+            ),
+            (self.world.agent.flying, self.always_run, self.temp_run.is_some()),
+        );
+        if clear.fly {
+            self.toggle_fly();
+        }
+        if clear.always_run {
             self.set_always_run(false);
         }
-        if self.world.rlva.has("temprun") {
+        if clear.temp_run {
             self.temp_run = None;
         }
         let invalid: Vec<_> = self
@@ -833,5 +848,47 @@ impl App {
                 _ => {}
             }
         }
+    }
+}
+
+/// What RlvUIEnabler::onToggleMovement clears: a restriction held while its
+/// movement state is on. `held` and `state` are (fly, alwaysrun, temprun).
+#[derive(Debug, PartialEq, Eq)]
+struct MovementClear {
+    fly: bool,
+    always_run: bool,
+    temp_run: bool,
+}
+
+impl MovementClear {
+    fn new(held: (bool, bool, bool), state: (bool, bool, bool)) -> Self {
+        Self {
+            fly: held.0 && state.0,
+            always_run: held.1 && state.1,
+            temp_run: held.2 && state.2,
+        }
+    }
+}
+
+#[cfg(test)]
+mod movement_tests {
+    use super::MovementClear;
+
+    #[test]
+    fn fly_restriction_lands_a_flying_avatar_only() {
+        assert!(MovementClear::new((true, false, false), (true, false, false)).fly);
+        assert!(!MovementClear::new((true, false, false), (false, false, false)).fly);
+        // @fly=y (not held) forces nothing
+        assert!(!MovementClear::new((false, false, false), (true, false, false)).fly);
+    }
+
+    #[test]
+    fn run_restrictions_clear_their_own_state() {
+        let c = MovementClear::new((false, true, true), (false, true, true));
+        assert_eq!((c.fly, c.always_run, c.temp_run), (false, true, true));
+        let c = MovementClear::new((false, true, true), (true, false, false));
+        assert_eq!((c.fly, c.always_run, c.temp_run), (false, false, false));
+        let c = MovementClear::new((false, false, false), (true, true, true));
+        assert_eq!((c.fly, c.always_run, c.temp_run), (false, false, false));
     }
 }
