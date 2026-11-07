@@ -3073,10 +3073,8 @@ pub(crate) fn toolbar_row(
         // without one (GridFeatureCheck)
         let no_guide = b.command == "destinations" && !toolbar.destinations;
         let no_pack = b.command == "avatar" && !toolbar.avatar_welcome;
-        let usable = !(b.command == "photo_roll" && toolbar.photo_roll_empty)
-            && !(b.command == "pose_stand" && row.seated)
-            && !no_guide
-            && !no_pack;
+        let usable =
+            !(b.command == "photo_roll" && toolbar.photo_roll_empty) && !(b.command == "pose_stand" && row.seated) && !no_guide && !no_pack;
         let tip = if badge {
             aurora_i18n::tr!(
                 "ui-bars-unread",
