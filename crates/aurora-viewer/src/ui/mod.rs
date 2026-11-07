@@ -24,6 +24,7 @@ pub mod beacons;
 pub mod buy_currency;
 pub mod buy_land;
 pub mod call_invite;
+pub mod capture_360;
 pub mod chat;
 pub mod chat_bubbles;
 pub mod click_away_focus;
@@ -166,6 +167,8 @@ pub struct Panels {
     pub wearable_favorites: bool,
     /// The photo window (Firestorm's snapshot floater).
     pub snapshot: bool,
+    /// The 360° snapshot window (LLFloater360Capture).
+    pub capture_360: bool,
     pub people: bool,
     pub minimap: bool,
     /// World map (Ctrl+M).
@@ -265,6 +268,7 @@ impl Panels {
             group_titles: false,
             wearable_favorites: false,
             snapshot: false,
+            capture_360: false,
             people: settings.show_people,
             minimap: settings.show_minimap,
             world_map: false,

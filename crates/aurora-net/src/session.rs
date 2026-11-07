@@ -167,6 +167,9 @@ struct Sim {
     link_up: bool,
     /// When the seed capability was last asked for (timelines).
     caps_asked_at: Option<Instant>,
+    /// The interest list mode this region was last told
+    /// (LLViewerRegion::mInterestListMode): the same one is not posted again.
+    interest_list: InterestListMode,
 }
 
 impl Sim {
@@ -198,6 +201,7 @@ impl Sim {
             decode_failures: 0,
             link_up: false,
             caps_asked_at: None,
+            interest_list: InterestListMode::Default,
         }
     }
 }
@@ -314,6 +318,8 @@ struct Session<'a> {
     refuse_neighbours: bool,
     /// The camera's vertical viewing angle, last told to the simulator.
     fov: f32,
+    /// The interest list mode asked of the regions (LLAgent::mInterestListMode).
+    interest_list: InterestListMode,
     logout_started: Option<Instant>,
     finished: bool,
     agent_moved: bool,
@@ -511,6 +517,7 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
         far: 128.0,
         refuse_neighbours: false,
         fov: DEFAULT_FOV,
+        interest_list: InterestListMode::Default,
         logout_started: None,
         finished: false,
         agent_moved: false,
@@ -993,6 +1000,11 @@ impl Session<'_> {
             self.update_agent_language();
             // LLEnvironment::onRegionChange -> requestRegion once caps arrive
             self.request_environment(None);
+            // LLAgent::capabilityReceivedCallback: the 360° snapshot's mode
+            // again for the agent's region
+            if self.interest_list != InterestListMode::Default {
+                self.post_interest_list(addr);
+            }
             if self.inventory_merchant_pending {
                 self.inventory_merchant_pending = false;
                 self.on_command(NetCommand::RequestInventoryMerchant);
@@ -1751,6 +1763,17 @@ impl Session<'_> {
                     self.fov = angle;
                     if let Some(main) = self.main {
                         self.send_fov(main);
+                    }
+                }
+            }
+            // LLAgent::changeInterestListMode: every region alive with its
+            // capabilities, the ones already in that mode unaffected
+            NetCommand::SetInterestListMode(mode) => {
+                if mode != self.interest_list {
+                    self.interest_list = mode;
+                    let addrs: Vec<SocketAddr> = self.sims.keys().copied().collect();
+                    for addr in addrs {
+                        self.post_interest_list(addr);
                     }
                 }
             }
@@ -3431,6 +3454,31 @@ impl Session<'_> {
         tokio::spawn(async move {
             crate::viewer_stats::post(&http, &url, &body).await;
             posts.end();
+        });
+    }
+
+    /// LLViewerRegion::setInterestListMode: the mode posted to one region's
+    /// InterestList capability, `{"mode": "360" | "default"}` (nothing
+    /// without the capability, nothing to a region already in that mode);
+    /// the reply only logged.
+    fn post_interest_list(&mut self, addr: SocketAddr) {
+        let mode = self.interest_list;
+        let Some(sim) = self.sims.get_mut(&addr) else { return };
+        // (a region whose capabilities have not come is left for their
+        // arrival, as LLAgent::changeInterestListMode skips it)
+        let Some(url) = sim.caps.get("InterestList").cloned() else { return };
+        if sim.interest_list == mode {
+            return;
+        }
+        sim.interest_list = mode;
+        let handle = sim.handle;
+        let body = caps::interest_list_body(mode);
+        let http = self.sh.caps_http.clone();
+        tokio::spawn(async move {
+            match caps::post_llsd(&http, &url, &body).await {
+                Ok(_) => log::info!("InterestList mode {} posted to region {handle}", mode.as_str()),
+                Err(e) => log::warn!("InterestList mode {} not posted to region {handle}: {e}", mode.as_str()),
+            }
         });
     }
 
@@ -6311,6 +6359,7 @@ mod event_queue_tests {
             far: 128.0,
             refuse_neighbours: false,
             fov: DEFAULT_FOV,
+            interest_list: InterestListMode::Default,
             logout_started: None,
             finished: false,
             agent_moved: false,
@@ -6654,6 +6703,7 @@ mod script_dialog_tests {
             far: 128.0,
             refuse_neighbours: false,
             fov: DEFAULT_FOV,
+            interest_list: InterestListMode::Default,
             logout_started: None,
             finished: false,
             agent_moved: false,

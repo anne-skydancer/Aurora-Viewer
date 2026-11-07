@@ -106,8 +106,8 @@ pub const COMMANDS: &[Command] = commands![
     "group_titles", "tags-filled", "toolbar-command-group-titles", true;
     "wearable_favorites", "hanger-2-filled", "toolbar-command-wearable-favorites", true;
     "discord", "brand-discord-filled", "toolbar-command-discord", false;
-    "360capture", "panorama-horizontal-filled", "toolbar-command-360-snapshot", false;
     "omnifilter", "filter-filled", "toolbar-command-omnifilter", true;
+    "360capture", "panorama-horizontal-filled", "toolbar-command-360-snapshot", true;
 ];
 
 impl Command {
