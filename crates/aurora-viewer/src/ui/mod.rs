@@ -37,6 +37,7 @@ pub mod conversation_log;
 pub mod crosshair;
 pub mod debug_overlay;
 pub mod destinations;
+pub mod debug_settings;
 pub mod dev_toolbox;
 pub mod display_name;
 pub mod emoji;
@@ -222,6 +223,8 @@ pub struct Panels {
     pub avatar_welcome: bool,
     /// "Quick preferences" (toolbar `quickprefs`).
     pub quick_prefs: bool,
+    /// "Debug settings" (toolbar `settings_debug`, Advanced menu).
+    pub debug_settings: bool,
     /// "Voice controls" (toolbar): who is in the voice channel and who speaks.
     pub voice_controls: bool,
     /// The pose stand (toolbar `pose_stand`).
@@ -298,6 +301,7 @@ impl Panels {
             destinations: false,
             avatar_welcome: false,
             quick_prefs: false,
+            debug_settings: false,
             voice_controls: false,
             pose_stand: false,
             omnifilter: false,

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub mod area_search;
 pub mod backup;
 mod hover_height;
+pub mod registry;
 mod saver;
 pub mod stream_list;
 
@@ -646,6 +647,9 @@ pub struct Settings {
     /// box "Do not show again" of the confirmation turns it off). Firestorm
     /// keeps one "ignore" per notification: one setting here for the three.
     pub confirm_teleports: bool,
+    /// The warning when the Debug settings window opens (DebugSettingsWarning;
+    /// its "Do not show again" box turns it off).
+    pub debug_settings_warning: bool,
     /// Ask before a Hypergrid teleport that leaves worn items behind: with
     /// OpenSim's suitcase, another grid loads only what is in My Suitcase
     /// (`world::suitcase`). Not a Legacy Viewer setting; its box "Do not
@@ -1906,6 +1910,7 @@ impl Default for Settings {
             inspect_columns: crate::ui::inspect::ALL_COLUMNS,
             landmarks_by_date: true,
             confirm_teleports: true,
+            debug_settings_warning: true,
             warn_hypergrid_suitcase: true,
             confirm_no_transfer_settings: true,
             confirm_object_bonus: true,

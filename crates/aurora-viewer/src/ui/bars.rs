@@ -1299,6 +1299,16 @@ fn main_menus(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, st: &StatusIn
                     &mut panels.sim_console,
                 );
             }
+            // Advanced › Show Debug Settings (Advanced.ShowDebugSettings)
+            let debug_settings = aurora_i18n::tr!("toolbar-command-debug-settings");
+            flip_window(
+                ui,
+                p,
+                "terminal-2",
+                debug_settings,
+                super::debug_settings::WINDOW,
+                &mut panels.debug_settings,
+            );
             // Advanced › Quiet Snapshots (PlayModeUISndSnapshot)
             let quiet = aurora_i18n::tr!("photo-quiet-snapshots");
             if menu::check(ui, p, "camera-off", quiet, st.quiet_snapshots, true) {
@@ -2202,6 +2212,8 @@ pub fn run_command(ctx: &egui::Context, cmd: &str, panels: &mut Panels) -> BarAc
         "beacons" => toggle(super::beacons::WINDOW, &mut panels.beacons),
         // Floater.Toggle quickprefs
         "quickprefs" => toggle(super::quick_prefs::WINDOW, &mut panels.quick_prefs),
+        // Advanced.ShowDebugSettings
+        "settings_debug" => toggle(super::debug_settings::WINDOW, &mut panels.debug_settings),
         // Avatar.TogglePicks: our profile on its Picks tab
         "picks" => return BarAction::MyPicks,
         // MainChatbarVisible: the nearby chat bar shown or put away
@@ -2303,6 +2315,7 @@ fn command_active(cmd: &str, panels: &Panels, flying: bool, seated: bool, mousel
         "snapshot" => panels.snapshot,
         "beacons" => panels.beacons,
         "quickprefs" => panels.quick_prefs,
+        "settings_debug" => panels.debug_settings,
         "preferences" => panels.settings,
         "move" => panels.movement_controls,
         "view" => panels.camera_controls,
@@ -3759,6 +3772,7 @@ mod tests {
             ("avatar", super::super::avatar_welcome::WINDOW, |p| p.avatar_welcome),
             ("beacons", super::super::beacons::WINDOW, |p| p.beacons),
             ("quickprefs", super::super::quick_prefs::WINDOW, |p| p.quick_prefs),
+            ("settings_debug", super::super::debug_settings::WINDOW, |p| p.debug_settings),
             ("statistics", "perf", |p| p.perf),
             ("voice", super::super::voice_controls::WINDOW, |p| p.voice_controls),
             ("omnifilter", super::super::omnifilter::WINDOW, |p| p.omnifilter),

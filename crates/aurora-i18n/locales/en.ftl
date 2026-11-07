@@ -13534,3 +13534,15 @@ wearable-favorites-delete-confirm =
 wearable-favorites-invalid-name =
     Could not create Favorite Wearables folder "{ $name }".
     Folder names cannot contain / or \.
+# Debug settings window (LLFloaterSettingsDebug)
+debug-settings-search-hint = Search by name or description
+debug-settings-changed-only = Show changed settings only
+debug-settings-column-setting = Setting
+debug-settings-no-match = No setting matches.
+debug-settings-select-one = Select a setting to see its description and change its value.
+debug-settings-read-only = This setting cannot be changed here.
+debug-settings-not-set = Not set
+debug-settings-reset-default = Reset to default
+debug-settings-copied = Name copied
+debug-settings-warning-title = Debug settings warning
+debug-settings-warning-body = Warning! The use of the Debug settings window is unsupported. Changing debug settings can severely impact your experience and might lead to loss of data, functionality or even access to the service. Please do not change any values without knowing exactly what you are doing.

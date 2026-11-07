@@ -13507,3 +13507,15 @@ wearable-favorites-delete-confirm =
 wearable-favorites-invalid-name =
     お気に入りの着用物のフォルダ「{ $name }」を作成できませんでした。
     フォルダ名に「/」または「\」を含めることはできません。
+# Debug settings window (LLFloaterSettingsDebug)
+debug-settings-search-hint = 名前または説明で検索
+debug-settings-changed-only = 変更した設定のみ表示
+debug-settings-column-setting = 設定
+debug-settings-no-match = 一致する設定はありません。
+debug-settings-select-one = 設定を選択すると、説明の表示と値の変更ができます。
+debug-settings-read-only = この設定はここでは変更できません。
+debug-settings-not-set = 未設定
+debug-settings-reset-default = 初期設定に戻す
+debug-settings-copied = 名前をコピーしました
+debug-settings-warning-title = デバッグ設定に関する警告
+debug-settings-warning-body = 警告：デバッグ設定ウィンドウの使用はサポート対象外です。デバッグ設定を変更すると、使用体験が大きく損なわれ、データや機能、さらにはサービスへのアクセスを失うおそれがあります。内容を正確に理解していない限り、値を変更しないでください。

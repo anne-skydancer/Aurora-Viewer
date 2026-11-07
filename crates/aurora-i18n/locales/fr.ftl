@@ -13530,3 +13530,15 @@ wearable-favorites-delete-confirm =
 wearable-favorites-invalid-name =
     Impossible de créer le dossier des vêtements préférés « { $name } ».
     Les noms de dossier ne peuvent pas contenir / ou \.
+# Debug settings window (LLFloaterSettingsDebug)
+debug-settings-search-hint = Rechercher par nom ou description
+debug-settings-changed-only = Afficher uniquement les paramètres modifiés
+debug-settings-column-setting = Paramètre
+debug-settings-no-match = Aucun paramètre ne correspond.
+debug-settings-select-one = Sélectionnez un paramètre pour voir sa description et changer sa valeur.
+debug-settings-read-only = Ce paramètre ne peut pas être changé ici.
+debug-settings-not-set = Non défini
+debug-settings-reset-default = Rétablir la valeur par défaut
+debug-settings-copied = Nom copié
+debug-settings-warning-title = Avertissement sur les paramètres de débogage
+debug-settings-warning-body = Attention ! L'utilisation de la fenêtre des paramètres de débogage n'est pas prise en charge. Changer ces paramètres peut sérieusement dégrader votre expérience et entraîner une perte de données, de fonctionnalités, voire d'accès au service. Ne changez aucune valeur sans savoir exactement ce que vous faites.
