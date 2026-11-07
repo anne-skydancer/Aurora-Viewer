@@ -18,6 +18,7 @@ pub mod creation_preview;
 pub(crate) mod default_motions;
 pub mod describe;
 pub mod drawn;
+pub mod face_pattern;
 pub mod fetch_priority;
 pub(crate) mod flexible;
 mod foot_scope;
@@ -935,6 +936,11 @@ pub struct Scene {
     pub selection_silhouettes: HashSet<usize>,
     /// Selected texture-entry bits for each prim; all 45 TE slots must fit.
     pub selection_faces: HashMap<usize, u64>,
+    /// The faces of `selection_faces` picked in the build tool's Select face
+    /// mode, which also get the face-select pattern (`face_pattern.rs`).
+    pub pattern_faces: HashMap<usize, u64>,
+    /// The face-select pattern's texture, held once a face showed it.
+    face_pattern: face_pattern::Texture,
     selection_changed: Option<Instant>,
     /// Far avatars drawn as pictures (RenderAvatarMaxNonImpostors).
     impostors: impostors::Impostors,
@@ -1534,6 +1540,8 @@ impl Scene {
             mesh_lod_resets: HashMap::new(),
             selection_silhouettes: Default::default(),
             selection_faces: Default::default(),
+            pattern_faces: Default::default(),
+            face_pattern: Default::default(),
             selection_changed: None,
             debug_alpha: None,
             beacon_highlights: Default::default(),
@@ -2171,6 +2179,7 @@ impl Scene {
                 self.textures.release(&id);
             }
         }
+        self.face_pattern.forget(&mut self.textures);
         for (_, (id, _)) in std::mem::take(&mut self.light_textures) {
             self.textures.release(&id);
         }
@@ -4589,6 +4598,7 @@ impl Scene {
         let blend_casts = aurora_render::shadow_cull::blend_casts();
         let selection_wire = &self.selection_wire;
         let selection_faces = &self.selection_faces;
+        let pattern_faces = &self.pattern_faces;
         let photo_marks = &self.photo_marks;
         let give_marks = &self.give_marks.1;
         // the water's plane while the camera is above it: the blended
@@ -4611,6 +4621,7 @@ impl Scene {
             select_root: Vec<DrawCmd>,
             select_child: Vec<DrawCmd>,
             select_faces: Vec<DrawCmd>,
+            select_pattern: Vec<DrawCmd>,
             debug_blue: Vec<DrawCmd>,
             debug_green: Vec<DrawCmd>,
             debug_yellow: Vec<DrawCmd>,
@@ -4635,6 +4646,7 @@ impl Scene {
             select_root: Vec::new(),
             select_child: Vec::new(),
             select_faces: Vec::new(),
+            select_pattern: Vec::new(),
             debug_blue: Vec::new(),
             debug_green: Vec::new(),
             debug_yellow: Vec::new(),
@@ -4780,6 +4792,9 @@ impl Scene {
                     {
                         l.select_faces.push(cmd);
                     }
+                    if face_pattern::has_face(pattern_faces, idx, f.te_index) {
+                        l.select_pattern.push(cmd);
+                    }
                 }
                 if pass == Pass::Hidden {
                     // LLVolumeGeometryManager excludes attachments and rigged
@@ -4873,6 +4888,7 @@ impl Scene {
             a.select_root.append(&mut b.select_root);
             a.select_child.append(&mut b.select_child);
             a.select_faces.append(&mut b.select_faces);
+            a.select_pattern.append(&mut b.select_pattern);
             a.casters.append(&mut b.casters);
             a.refl.append(&mut b.refl);
             a.probe.append(&mut b.probe);
@@ -4930,6 +4946,7 @@ impl Scene {
         self.lists.probe = result.probe;
         self.lists.glow = result.glow;
         self.lists.select_faces = result.select_faces;
+        self.lists.select_pattern = result.select_pattern;
         self.lists.glow_alpha = result.glow_alpha;
         for (slot, cmd, blend) in result.impostor {
             if let Some(c) = plan.captures.get_mut(slot) {
