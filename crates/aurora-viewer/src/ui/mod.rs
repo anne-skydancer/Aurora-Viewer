@@ -33,6 +33,7 @@ pub mod context;
 pub mod controls;
 pub mod crosshair;
 pub mod debug_overlay;
+pub mod debug_settings;
 pub mod dev_toolbox;
 pub mod display_name;
 pub mod emoji;
@@ -205,6 +206,8 @@ pub struct Panels {
     pub web_browser: bool,
     /// "Quick preferences" (toolbar `quickprefs`).
     pub quick_prefs: bool,
+    /// "Debug settings" (toolbar `settings_debug`, Advanced menu).
+    pub debug_settings: bool,
     /// "Voice controls" (toolbar): who is in the voice channel and who speaks.
     pub voice_controls: bool,
     /// "About Aurora Viewer" (Help menu): the version, the system
@@ -269,6 +272,7 @@ impl Panels {
             grid_status: false,
             web_browser: false,
             quick_prefs: false,
+            debug_settings: false,
             voice_controls: false,
             about: false,
             stream_title: settings.audio.stream_title_window,

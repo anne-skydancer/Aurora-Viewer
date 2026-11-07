@@ -80,6 +80,7 @@ mod give_demo;
 mod gpu_recovery;
 mod gpu_stall;
 pub(crate) use gpu_stall::withdraw_all as withdraw_gpu_notices;
+mod debug_settings;
 mod graphics_start;
 mod grid_status;
 mod group_titles;
@@ -757,6 +758,9 @@ pub struct App {
     /// Quick preferences (the toolbar's `quickprefs`).
     quick_prefs_ui: ui::quick_prefs::QuickPrefsUi,
     quick_prefs_demo_done: bool,
+    /// Debug settings (the toolbar's `settings_debug`, Advanced menu).
+    debug_settings_ui: ui::debug_settings::DebugSettingsUi,
+    debug_settings_demo_done: bool,
     /// Report Abuse (LLFloaterReporter).
     report_abuse: ui::report_abuse::ReportAbuseUi,
     /// The depth of field's focus distance and its transition.
@@ -1679,6 +1683,8 @@ impl App {
             hover_height_ui: Default::default(),
             quick_prefs_ui: Default::default(),
             quick_prefs_demo_done: false,
+            debug_settings_ui: Default::default(),
+            debug_settings_demo_done: false,
             follow_ui: Default::default(),
             portal_ui: Default::default(),
             particle_editor: Default::default(),
@@ -17457,6 +17463,7 @@ impl App {
                 self.draw_env_editor(&ctx, &p);
                 self.draw_day_editor(&ctx, &p);
                 self.draw_options(&ctx, &p, &mut a);
+                self.debug_settings_window(&ctx, &p, &mut a);
                 self.startup_windows.remember(&self.panels, &mut self.settings);
                 self.chat_ui.remember_layout(&mut self.settings);
                 self.settings.show_camera_controls = self.panels.camera_controls;
