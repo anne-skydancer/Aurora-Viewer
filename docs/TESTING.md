@@ -4997,6 +4997,7 @@ before (`amis`, `groupes`, `repere`, `historique`…) are still accepted.
 | `AURORA_DEMO_PERF=compact`, `full`, `network` or `monitor-<section>` | Opens the Performance window: compact, the resource monitor, or one of its sections |
 | `AURORA_DEMO_SUITCASE=1` | The question before a Hypergrid teleport that leaves worn items behind |
 | `AURORA_DEMO_QUICKPREFS=1` | Opens the Quick preferences window (toolbar `quickprefs`) |
+| `AURORA_DEMO_DEBUG_SETTINGS=1` or `search=<text>` | Opens the Debug settings window (toolbar `settings_debug`), its warning answered, with a search typed |
 | `AURORA_DEMO_BUY_CURRENCY=<mode>` | Demo balance and "Buy L$" window |
 | `AURORA_DEMO_CURRENCY=<symbol>` | An OpenSim grid's own money symbol (KC, OS$…) shown in place of L$ |
 | `AURORA_DEMO_BUY_LAND=<mode>[:confirm]` | Plaza parcel for sale and "Buy Land" window |
@@ -5298,6 +5299,20 @@ before (`amis`, `groupes`, `repere`, `historique`…) are still accepted.
   and the return to the shared environment. Moving a slider changes the same
   setting in Preferences (open both to compare) and is saved on release.
   Capture after frame 300, with `--language fr` and `--language en`.
+- **`AURORA_DEMO_DEBUG_SETTINGS=1|search=<text>`**: opens Debug settings at
+  the first frame, as the toolbar's button and Advanced › Debug settings
+  do, with the warning of the first opening already answered; `search=`
+  fills the search and selects its first result. Left, the search, the list
+  of every setting by its dotted name (`camera.pull_back`), sorted, a `*`
+  before the ones away from their default, and "Show changed settings
+  only"; right, the selected setting's "name: description" (its doc
+  comment), the editor of its kind (TRUE / FALSE, a spinner, spinners for
+  a vector, a colour swatch, a list for an enum, a text field), Copy (the
+  name) and Reset to default. A change applies at once, as one of
+  Preferences (open both to compare), and is saved on release. Paths and
+  login addresses are shown read-only, account data is not listed.
+  Capture after the loading fade (`AURORA_CAPTURE_FRAMES=700`), with
+  `--language fr` and `--language en`.
 - **`AURORA_DEMO_SUITCASE=1`**: at frame 300, the question a Hypergrid
   teleport from the home grid asks when worn items are not in My Suitcase:
   seven invented items, an invented grid as the destination. "Teleport anyway" goes
