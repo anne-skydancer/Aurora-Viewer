@@ -436,7 +436,7 @@ impl DebugSettingsUi {
                             changed |= ui.selectable_value(&mut current, variant.clone(), variant.as_str()).changed();
                         }
                     });
-                changed.then(|| Value::String(current))
+                changed.then_some(Value::String(current))
             }
             Kind::Text => {
                 if self.text_for.as_deref() != Some(entry.name.as_str()) {
@@ -517,9 +517,11 @@ mod tests {
             &[egui::vec2(WIDTH, HEIGHT), egui::vec2(640.0, 480.0)],
             reset,
             || {
-                let mut ui = DebugSettingsUi::default();
-                ui.warned = true;
-                ui.selected = Some("draw_distance".into());
+                let ui = DebugSettingsUi {
+                    warned: true,
+                    selected: Some("draw_distance".into()),
+                    ..Default::default()
+                };
                 (ui, Settings::default())
             },
             |(window, settings), ctx, p| {
@@ -532,9 +534,11 @@ mod tests {
     #[test]
     fn a_search_selects_its_first_result_and_the_changed_filter_narrows_it() {
         let mut settings = Settings::default();
-        let mut window = DebugSettingsUi::default();
-        window.registry = Some(Registry::of(&settings));
-        window.query = "ui_scal".into();
+        let mut window = DebugSettingsUi {
+            registry: Some(Registry::of(&settings)),
+            query: "ui_scal".into(),
+            ..Default::default()
+        };
         window.select_first_match();
         assert_eq!(window.selected.as_deref(), Some("ui_scale"));
         Registry::set(&mut settings, "show_huds", Value::Bool(false)).expect("set");
