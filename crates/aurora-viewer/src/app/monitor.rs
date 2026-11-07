@@ -124,6 +124,7 @@ impl App {
                 self.destinations_ui.web_process_id(),
                 aurora_i18n::tr!("toolbar-command-destinations"),
             ),
+            (self.avatar_welcome_ui.web_process_id(), aurora_i18n::tr!("toolbar-command-avatar")),
         ];
         for (pid, label) in pages {
             if let Some(pid) = pid {

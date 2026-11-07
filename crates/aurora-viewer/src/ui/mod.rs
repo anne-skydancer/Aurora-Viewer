@@ -10,6 +10,7 @@ pub mod aurora_bg;
 pub mod avatar_align;
 pub mod avatar_picker;
 pub mod avatar_render_settings;
+pub mod avatar_welcome;
 pub mod backdrop;
 pub mod bars;
 pub mod bidi;
@@ -213,6 +214,8 @@ pub struct Panels {
     pub web_browser: bool,
     /// The Destination Guide (toolbar `destinations`, World › Destinations).
     pub destinations: bool,
+    /// The Avatar Welcome Pack (toolbar `avatar`, Me › Avatar Welcome Pack…).
+    pub avatar_welcome: bool,
     /// "Quick preferences" (toolbar `quickprefs`).
     pub quick_prefs: bool,
     /// "Voice controls" (toolbar): who is in the voice channel and who speaks.
@@ -283,6 +286,7 @@ impl Panels {
             avatar_align_mini: settings.avatar_align_mini,
             web_browser: false,
             destinations: false,
+            avatar_welcome: false,
             quick_prefs: false,
             voice_controls: false,
             pose_stand: false,

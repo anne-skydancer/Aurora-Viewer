@@ -266,6 +266,9 @@ pub struct StatusInfo<'a> {
     /// The grid has a Destination Guide (World › Destinations is shown only
     /// then, GridFeatureCheck destination_guide).
     pub destinations: bool,
+    /// The grid has an Avatar Welcome Pack (Me › Avatar Welcome Pack… is
+    /// shown only then, GridFeatureCheck avatar_picker).
+    pub avatar_welcome: bool,
     /// The landmark lying on the agent's parcel (hasParcelLandmark): the
     /// star is lit and World › Landmark this place greyed out.
     pub parcel_landmark: Option<super::landmark_create::ParcelLandmark>,
@@ -757,6 +760,12 @@ fn main_menus(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, st: &StatusIn
             super::experiences::WINDOW,
             &mut panels.experiences,
         );
+        // menu_viewer.xml: Avatar Welcome Pack… (Floater.Toggle
+        // avatar_welcome_pack), after the attachments, which this menu does
+        // not hold; on a grid with the page
+        if st.avatar_welcome && menu::item(ui, p, "user-circle", aurora_i18n::tr!("ui-bars-avatar-welcome-pack")) {
+            super::widgets::toggle_floater(ui.ctx(), super::avatar_welcome::WINDOW, &mut panels.avatar_welcome);
+        }
         menu::separator(ui, p);
         if menu::item_if(ui, p, "home-filled", aurora_i18n::tr!("common-go-home"), st.can_go_home) {
             *action = BarAction::TeleportHome;
@@ -2139,6 +2148,8 @@ pub fn run_command(ctx: &egui::Context, cmd: &str, panels: &mut Panels) -> BarAc
         "webbrowser" => toggle(super::web_browser::WINDOW, &mut panels.web_browser),
         // Floater.Toggle destinations: the grid's Destination Guide
         "destinations" => toggle(super::destinations::WINDOW, &mut panels.destinations),
+        // Floater.Toggle avatar_welcome_pack: the grid's ready-made avatars
+        "avatar" => toggle(super::avatar_welcome::WINDOW, &mut panels.avatar_welcome),
         // Floater.Toggle fs_voice_controls
         "voice" => toggle(super::voice_controls::WINDOW, &mut panels.voice_controls),
         // Floater.Toggle fs_posestand
@@ -2245,6 +2256,7 @@ fn command_active(cmd: &str, panels: &Panels, flying: bool, seated: bool, mousel
         "avatar_align" => panels.avatar_align,
         "webbrowser" => panels.web_browser,
         "destinations" => panels.destinations,
+        "avatar" => panels.avatar_welcome,
         "voice" => panels.voice_controls,
         "pose_stand" => panels.pose_stand,
         "performance" | "statistics" => panels.perf,
@@ -2987,11 +2999,14 @@ pub(crate) fn toolbar_row(
         // the Photo roll's button, dimmed while the session has no photo
         // the pose stand's, dimmed while we sit (Agent.IsActionAllowed
         // fs_when_not_sitting), its own ground lock included
-        // and the Destination Guide's on a grid without one (GridFeatureCheck)
+        // the Destination Guide's and the Avatar Welcome Pack's on a grid
+        // without one (GridFeatureCheck)
         let no_guide = b.command == "destinations" && !toolbar.destinations;
+        let no_pack = b.command == "avatar" && !toolbar.avatar_welcome;
         let usable = !(b.command == "photo_roll" && toolbar.photo_roll_empty)
             && !(b.command == "pose_stand" && row.seated)
-            && !no_guide;
+            && !no_guide
+            && !no_pack;
         let tip = if badge {
             aurora_i18n::tr!(
                 "ui-bars-unread",
@@ -3002,6 +3017,8 @@ pub(crate) fn toolbar_row(
             format!("{}\n{}", super::toolbar::label(b), menu::not_yet())
         } else if no_guide {
             format!("{}\n{}", super::toolbar::label(b), aurora_i18n::tr!("destinations-unavailable"))
+        } else if no_pack {
+            format!("{}\n{}", super::toolbar::label(b), aurora_i18n::tr!("avatar-welcome-unavailable"))
         } else if !usable {
             format!("{}\n{}", super::toolbar::label(b), aurora_i18n::tr!("photo-reel-none"))
         } else {
@@ -3696,6 +3713,7 @@ mod tests {
             ("gridstatus", super::super::grid_status::WINDOW, |p| p.grid_status),
             ("webbrowser", super::super::web_browser::WINDOW, |p| p.web_browser),
             ("destinations", super::super::destinations::WINDOW, |p| p.destinations),
+            ("avatar", super::super::avatar_welcome::WINDOW, |p| p.avatar_welcome),
             ("beacons", super::super::beacons::WINDOW, |p| p.beacons),
             ("quickprefs", super::super::quick_prefs::WINDOW, |p| p.quick_prefs),
             ("statistics", "perf", |p| p.perf),

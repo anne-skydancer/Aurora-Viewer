@@ -273,6 +273,9 @@ pub struct ToolbarUi {
     /// The grid has a Destination Guide (given by the app): without one,
     /// its button is dimmed (GridFeatureCheck destination_guide).
     pub destinations: bool,
+    /// The grid has an Avatar Welcome Pack (given by the app): without one,
+    /// its button is dimmed (GridFeatureCheck avatar_picker).
+    pub avatar_welcome: bool,
     pub photo_roll_active: bool,
     /// The nearby chat bar is shown (MainChatbarVisible).
     pub chat_bar_active: bool,
