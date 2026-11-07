@@ -723,6 +723,14 @@ pub struct Settings {
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
     pub window_maximized: bool,
+    /// While this window is in front, the screen saver does not start and
+    /// the screen is not turned off (power.rs). The Legacy Viewer always
+    /// does it, with no setting; off by default here: a viewer left open
+    /// should not keep a screen on unless asked.
+    pub keep_screen_on: bool,
+    /// Aurora-only: while logged in, the computer does not go to sleep from
+    /// inactivity (power.rs). A sleep the user asks for still happens.
+    pub keep_awake: bool,
     /// Start in a borderless window covering the current monitor.
     pub window_fullscreen: bool,
     /// Legacy single-account authorization, read once for migration only.
@@ -1950,6 +1958,8 @@ impl Default for Settings {
             window_x: None,
             window_y: None,
             window_maximized: false,
+            keep_screen_on: false,
+            keep_awake: false,
             window_fullscreen: false,
             mfa_hash: String::new(),
             font: crate::ui::fonts::DEFAULT.into(),

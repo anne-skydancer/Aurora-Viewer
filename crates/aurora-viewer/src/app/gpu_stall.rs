@@ -25,6 +25,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 const NOTICE_AFTER: Duration = Duration::from_secs(6);
 /// Kept waiting from the notice: shown again after this long if still stuck.
 const NOTICE_AGAIN: Duration = Duration::from_secs(60);
+/// Two passes of this check this far apart mean the whole process stood
+/// still (the computer asleep, a debugger, a native dialog holding the main
+/// thread): the GPU did not keep the frame for that long. A real stall
+/// keeps the passes coming every 50 ms (`Renderer::render_thread_free`).
+const PAUSE: Duration = Duration::from_secs(5);
 
 /// What the user answered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +52,8 @@ struct Notice {
 pub(super) struct GpuStall {
     /// The stall has been noted (log, crash session).
     noted: bool,
+    /// The last pass of `gpu_stall_frame`, for the gap of a [`PAUSE`].
+    last_pass: Option<Instant>,
     notice: Option<Notice>,
     /// When the user last chose to keep waiting.
     waited_at: Option<Instant>,
@@ -59,6 +66,12 @@ pub(super) struct GpuStall {
     pub(super) recover: Option<bool>,
 }
 
+/// The gap between two passes when it is a pause of the whole process.
+fn pause_gap(last_pass: Option<Instant>, now: Instant) -> Option<Duration> {
+    let gap = now.duration_since(last_pass?);
+    (gap >= PAUSE).then_some(gap)
+}
+
 /// Whether to show the notice now.
 fn notice_due(stalled: Duration, shown: bool, waited_at: Option<Instant>, now: Instant) -> bool {
     !shown && stalled >= NOTICE_AFTER && waited_at.is_none_or(|at| now.duration_since(at) >= NOTICE_AGAIN)
@@ -68,6 +81,15 @@ impl App {
     /// Each frame, after the renderer was asked for one.
     pub(super) fn gpu_stall_frame(&mut self, renderer: &aurora_render::Renderer) {
         let now = Instant::now();
+        // the computer slept (or the main thread was held): the GPU's
+        // clock skips it, on every system (power.rs)
+        if let Some(gap) = pause_gap(self.gpu_stall.last_pass.replace(now), now) {
+            log::info!(
+                "the viewer stood still for {} s (the computer asleep, or the main thread held): not counted as a graphics card stall",
+                gap.as_secs()
+            );
+            renderer.forgive_pause(gap);
+        }
         // a VR session is not recovered yet (TASKS.md): it closes as before
         let recovers = super::gpu_recovery::enabled(self.settings.gpu_recovery) && !renderer.vr_engaged();
         if renderer.device_lost() && recovers && !self.gpu_stall.lost {
@@ -465,6 +487,18 @@ mod tests {
         // kept waiting a moment ago: not again at once, but later
         assert!(!notice_due(Duration::from_secs(30), false, Some(now), now));
         assert!(notice_due(Duration::from_secs(90), false, Some(now), now + NOTICE_AGAIN));
+    }
+
+    #[test]
+    fn only_a_long_gap_between_two_passes_is_a_pause() {
+        let now = Instant::now();
+        assert_eq!(pause_gap(None, now), None, "the first pass");
+        assert_eq!(
+            pause_gap(Some(now - Duration::from_millis(50)), now),
+            None,
+            "a real stall's polling"
+        );
+        assert_eq!(pause_gap(Some(now - Duration::from_secs(16)), now), Some(Duration::from_secs(16)));
     }
 
     #[test]

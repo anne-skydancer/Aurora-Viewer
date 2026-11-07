@@ -82,6 +82,7 @@ mod overlay_hooks;
 mod own_motion;
 mod physics_editor;
 mod pose_stand;
+mod power;
 mod raw_mouse;
 mod report_abuse;
 mod scene;
@@ -313,6 +314,8 @@ fn run_viewer() -> anyhow::Result<()> {
     }
     let mut app = app::App::new()?;
     let result = event_loop.run_app(app.as_mut());
+    // nothing asked of the system's power any more, on every way out
+    power::release();
     // a graphics card box still shown would outlive the viewer on macOS and
     // Linux (app/gpu_stall.rs)
     app::withdraw_gpu_notices(std::time::Duration::from_secs(1));

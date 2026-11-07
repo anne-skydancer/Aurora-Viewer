@@ -484,9 +484,37 @@ pub fn take_gpu_trouble() -> bool {
 }
 
 /// A viewer stopped by Windows ending the session (shutdown, restart, sign
-/// out) did not crash: nothing to report.
+/// out) did not crash: nothing to report. Nor did one whose computer went
+/// to sleep and never came back ([`slept`]).
 fn should_report(dir: &Path, exit_code: u32) -> bool {
-    !dir.join("system-ending").exists() && (exit_code != 0 || dir.join("failed").exists() || !dir.join("normal").exists())
+    !dir.join("system-ending").exists()
+        && !dir.join(SLEPT).exists()
+        && (exit_code != 0 || dir.join("failed").exists() || !dir.join("normal").exists())
+}
+
+/// The marker of a session whose computer is asleep (power.rs): left
+/// behind by a computer that never wakes, it keeps that end from being
+/// reported as a crash; [`woke`] removes it.
+const SLEPT: &str = "slept";
+
+/// The computer is going to sleep.
+pub fn slept() {
+    if let Some(session) = SESSION.get() {
+        let _ = std::fs::write(session.dir.join(SLEPT), []);
+    }
+}
+
+/// The computer woke up: the session goes on and answers for itself again.
+pub fn woke() {
+    if let Some(session) = SESSION.get() {
+        let _ = std::fs::remove_file(session.dir.join(SLEPT));
+    }
+}
+
+/// The main thread stops on purpose for about that long (`AURORA_DEMO_SLEEP`
+/// stands in for the computer's sleep): not a freeze for the watchdog.
+pub fn expect_pause(duration: Duration) {
+    watchdog::expect_pause(duration);
 }
 
 fn preserve(dir: &Path, exit_code: u32) -> anyhow::Result<()> {

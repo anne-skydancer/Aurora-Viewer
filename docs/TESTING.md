@@ -5165,6 +5165,7 @@ before (`amis`, `groupes`, `repere`, `historique`…) are still accepted.
 | `AURORA_DEMO_GPU_STALL=<frame>[:<seconds>]` | The render thread holds a frame as a graphics card that stopped answering would |
 | `AURORA_DEMO_GPU_LOST=<frame>` | The GPU device is taken as lost at that frame, as after a driver reset |
 | `AURORA_DEMO_GPU_HANG=<frame>` | A real GPU hang at that frame: the driver resets the GPU (affects other GPU programs) |
+| `AURORA_DEMO_SLEEP=<frame>[,<seconds>]` | The computer goes to sleep at that frame: the logout path, the viewer stood still for that long (16 s), then the wake-up and the login screen's note; no stall notice nor freeze report |
 | `AURORA_GPU_RECOVERY=1` / `=0` | Recover from a GPU device loss on a new window and device, or close, whatever Preferences › Graphics says (on by default) |
 | `AURORA_DEMO_OVERLAY_HOOK=<file>` | An overlay hook DLL counts as loaded in the viewer (Discord, Steam…) |
 | `AURORA_DEMO_SAFE_GRAPHICS=offer\|active` | The safe graphics card on the login screen |
@@ -7269,6 +7270,26 @@ Human grid validation: remember MFA for account A and B, restart the viewer, the
   `GPU loss: first seen by` = `demo`), and its first table the
   `Vulkan layers on offer`: read it in the session's
   `public-report.md` under the crash folder of `%LOCALAPPDATA%\Aurora`.
+- **`AURORA_DEMO_SLEEP=<frame>[,<seconds>]`**, with `AURORA_DEMO=1`: the
+  computer goes to sleep at that frame, as Windows announces it
+  (`PBT_APMSUSPEND`, `power.rs`): the session is asked for its normal
+  logout (`power: logout asked of the session…` in the log; the demo's
+  offline session only logs the command, on the grid `LogoutRequest sent`
+  follows within the second the suspend is held), then the whole viewer
+  stands still for `<seconds>` (16 by default) like the sleeping computer,
+  and wakes up (`power: the computer woke up`). The login screen then says
+  "The computer went to sleep, so you were logged out". What must not
+  happen: the "graphics card is not responding" box (the log says `the
+  viewer stood still for 16 s …: not counted as a graphics card stall`),
+  a `freeze.txt` in the crash session or `the window did not answer`
+  (the watchdog was told of the pause), a crash report at the next start
+  (the session's `slept` marker is removed at the wake-up). With
+  `AURORA_FPS_LIMIT=60`, frame 600 comes about 10 s after the start; a
+  capture after the sleep (`AURORA_CAPTURE_FRAMES=700`) shows the note.
+  The settings "Keep the screen on while Aurora is in front" and "Keep
+  the computer awake while logged in" (Preferences › Language and
+  updates) have no demo: `powercfg /requests` (as administrator) lists the
+  viewer under SYSTEM while the second is on and the demo is in the world.
 - **`AURORA_DEMO_GPU_HANG=<frame>`**, with `AURORA_DEMO=1`: a real GPU hang
   at that frame, for testing the recovery on a real driver reset. One
   compute dispatch whose loop runs about 12 s on a recent card (the log says
