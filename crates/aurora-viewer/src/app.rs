@@ -18045,7 +18045,7 @@ impl App {
                 self.draw_env_editor(&ctx, &p);
                 self.draw_day_editor(&ctx, &p);
                 self.draw_options(&ctx, &p, &mut a);
-                self.debug_settings_window(&ctx, &p, &mut a);
+                self.debug_settings_window(&ctx, &p);
                 self.startup_windows.remember(&self.panels, &mut self.settings);
                 self.chat_ui.remember_layout(&mut self.settings);
                 self.settings.show_camera_controls = self.panels.camera_controls;

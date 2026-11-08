@@ -157,7 +157,6 @@ pub struct Panels {
     pub chat: bool,
     pub perf: bool,
     /// The Dev Toolbox (Advanced › Dev Toolbox, Ctrl+Alt+D).
-    pub debug_settings: bool,
     pub dev_toolbox: bool,
     /// Advanced › Region console (SimConsoleAsync, estate managers).
     pub sim_console: bool,
@@ -307,7 +306,6 @@ impl Panels {
             destinations: false,
             avatar_welcome: false,
             quick_prefs: false,
-            debug_settings: false,
             voice_controls: false,
             pose_stand: false,
             omnifilter: false,
