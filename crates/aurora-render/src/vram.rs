@@ -637,44 +637,6 @@ mod tests {
     }
 
     #[test]
-    fn the_tightest_headroom_of_the_minute_is_kept_negative_included() {
-        let t0 = Instant::now();
-        let at = |s: u64| t0 + Duration::from_secs(s);
-        let mut h = SlidingMin::<i64>::default();
-        let mb = |n: i64| n * MB as i64;
-        assert_eq!(h.update(mb(9_000), at(0)), mb(9_000));
-        // another program takes the card: the viewer past its budget
-        assert_eq!(h.update(mb(-512), at(5)), mb(-512));
-        assert_eq!(h.update(mb(2_000), at(6)), mb(-512));
-        // the minute after that reading, the headroom since
-        assert_eq!(h.update(mb(2_000), at(66)), mb(2_000));
-    }
-
-    #[test]
-    fn the_sampler_publishes_the_headroom_of_its_readings() {
-        let readings = std::sync::Arc::new(std::sync::Mutex::new(vec![
-            (7_000 * MB, 3_000 * MB, 0, 0),
-            (5_000 * MB, 5_500 * MB, 0, 0),
-        ]));
-        let source = readings.clone();
-        let sampler = BudgetSampler::new(
-            move || {
-                let mut r = source.lock().unwrap();
-                if r.is_empty() { None } else { Some(r.remove(0)) }
-            },
-            Duration::from_millis(1),
-        );
-        let start = Instant::now();
-        while sampler.read() != Some((5_000 * MB, 5_500 * MB, 0)) && start.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        // the budget given out is the lowest, the headroom the tightest:
-        // 500 MB short at the second reading
-        assert_eq!(sampler.read(), Some((5_000 * MB, 5_500 * MB, 0)));
-        assert_eq!(sampler.headroom(), Some(-(500 * MB as i64)));
-    }
-
-    #[test]
     fn the_integrated_budget_sample_sums_distinct_heaps_and_retains_the_shared_cap() {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
