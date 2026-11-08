@@ -1,702 +1,470 @@
-//! A reflective, typed view of every setting by its dotted name
-//! (`draw_distance`, `camera.pull_back`, `colors.tag_me`): name, kind,
-//! current value, default, description, and the typed `set` / `reset` that
-//! the Debug settings window drives (and, later, the quick preferences
-//! editor). Aurora's counterpart of LLControlGroup's name → variable map
-//! (indra/llxml/llcontrol.cpp), which LLFloaterSettingsDebug walks.
+//! The settings by name, for the Debug Settings window (`ui/debug_settings.rs`):
+//! the role of LLControlGroup (indra/llxml/llcontrol.cpp, originally LGPL 2.1)
+//! for typed settings.
 //!
-//! No derive macro and no table by hand: `Settings` and its nested structs
-//! already derive serde, so the registry flattens `serde_json::to_value` of
-//! the settings and of `Settings::default()`. A field added anywhere in the
-//! settings is a row at once. A change goes back the same way: the tree
-//! patched at the name, read again as a `Settings` (serde's typing refuses
-//! a wrong type, a value out of a `u8`, an unknown enum variant), with the
-//! `#[serde(skip)]` runtime fields carried over (`restore_runtime`, whose
-//! list a test checks against the build-time scan).
+//! The list is read from the settings' own serialised form, so a new setting
+//! appears here without a line of code and a removed one cannot stay. A key is
+//! the path of a value (`camera.fov`), the same path Preferences' rows name
+//! (`ui/options/cx.rs`). A change goes back through the settings' own
+//! deserialisation and `Settings::sanitized`, so it has the type and the
+//! bounds of a settings file.
 //!
-//! Descriptions come from the `///` doc comments, scanned by build.rs into
-//! `settings_docs.rs` (`scan`): the comment of a field is its description,
-//! as the Legacy Viewer shows a setting's comment. Those comments name the
-//! Legacy setting the field ports ("LanguageIsPublic"), so a search by the
-//! Legacy name finds it, as LLFloaterSettingsDebug::onUpdateFilter searches
-//! the comments.
+//! Deliberate differences from the Legacy Viewer, all stricter:
+//! - the login, this PC's window and folders, and the service keys are never
+//!   listed (the Legacy Viewer lists what it does not store elsewhere; it
+//!   hides what is marked HideFromEditor);
+//! - a text value holding a UUID is never listed, whatever the setting: it may
+//!   be someone's asset (AGENTS.md, "Creators' permissions");
+//! - while RLVa holds a restriction, the RLVa settings cannot be changed.
+//!
+//! Lists, per-account maps and values with no default are not listed: they
+//! have no single value to edit.
 
 use super::Settings;
-use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use serde_json::{Map, Value};
 
-/// One field of a struct, as build.rs scanned it.
-#[derive(Debug)]
-pub struct Field {
-    /// Its name in the file (`#[serde(rename)]` applied).
-    pub json: &'static str,
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub rust: &'static str,
-    /// Its Rust type, as written.
-    pub ty: &'static str,
-    pub doc: &'static str,
-    /// Not in the saved file (`skip`, `skip_serializing`).
-    pub skipped: bool,
-    /// `#[serde(skip)]`: a value of the running viewer the file never holds.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub runtime: bool,
-}
-
-/// One struct of the crate, as build.rs scanned it.
-#[derive(Debug)]
-pub struct Struct {
-    pub name: &'static str,
-    pub fields: &'static [Field],
-}
-
-mod scan {
-    use super::{Field, Struct};
-    pub static STRUCTS: &[Struct] = include!(concat!(env!("OUT_DIR"), "/settings_docs.rs"));
-}
-
-/// Account data, never listed.
-const HIDDEN: &[&str] = &["username", "mfa_hash", "remember_password"];
-
-/// Listed, never edited here: a path, a login address, something the viewer
-/// sets itself.
-const READ_ONLY: &[&str] = &[
-    "custom_login_uri",
+/// Settings of the login and of this PC, or that another path has to change
+/// (the cache folder moves its files, the version drives the migrations).
+const HIDDEN: &[&str] = &[
+    "settings_version",
     "cache_location",
     "chat_log_location",
-    "gpu_adapter",
-    "settings_version",
-    "graphics_saved_active",
+    "window_fullscreen",
+    "new_profile",
 ];
 
-/// What the file never holds and a read of the patched tree would reset:
-/// `restore_runtime` carries them over. `Struct.field`, as the scan names
-/// them; the test `runtime_fields_are_all_restored` keeps the list current.
-#[cfg(test)]
-const RESTORED: &[&str] = &[
-    "Settings.debug",
-    "Settings.hover_height_account",
-    "Settings.newer_file",
-    "Settings.photo_held",
-    "Settings.new_profile",
-    "Settings.camera_limits_restored",
-    "BuildSettings.select_probes",
-    "RadarSettings.alert_sounds",
-    "Overlays.land_owners",
-    "Overlays.hide_particles",
-];
+/// A vector shown as one row has at most this many numbers (LLQuaternion,
+/// LLColor4, LLRect in the Legacy Viewer).
+const MAX_VECTOR: usize = 4;
 
-/// The values of the running viewer that the settings structs carry
-/// without saving them, put back into a `Settings` read from the tree.
-fn restore_runtime(fresh: &mut Settings, old: &Settings) {
-    fresh.debug = old.debug;
-    fresh.hover_height_account = old.hover_height_account;
-    fresh.newer_file = old.newer_file.clone();
-    fresh.photo_held = old.photo_held.clone();
-    fresh.new_profile = old.new_profile;
-    fresh.camera_limits_restored = old.camera_limits_restored;
-    fresh.build.select_probes = old.build.select_probes;
-    fresh.radar.alert_sounds = old.radar.alert_sounds;
-    fresh.world_overlays.land_owners = old.world_overlays.land_owners;
-    fresh.world_overlays.hide_particles = old.world_overlays.hide_particles;
-}
-
-/// What a setting holds, and so which editor it takes.
-#[derive(Clone, Debug, PartialEq)]
+/// The type of a value, which chooses its editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Bool,
-    /// An integer of the Rust type's range.
-    Integer {
-        min: f64,
-        max: f64,
-    },
+    Int,
     Float,
     Text,
-    /// An enum: its variants, as serde names them.
-    Choice(Vec<String>),
-    /// An `Rgba`: red, green, blue, alpha, 0 to 255.
-    Color,
-    /// An array of this many numbers (a camera offset…).
-    Vector(usize),
-    /// An unset `Option`: nothing to edit.
-    Null,
+    /// Numbers side by side; whole numbers when `whole`.
+    Vector {
+        len: usize,
+        whole: bool,
+    },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Access {
-    Editable,
-    ReadOnly,
+impl Kind {
+    fn of(value: &Value) -> Option<Kind> {
+        match value {
+            Value::Bool(_) => Some(Kind::Bool),
+            Value::Number(n) if n.is_f64() => Some(Kind::Float),
+            Value::Number(_) => Some(Kind::Int),
+            Value::String(_) => Some(Kind::Text),
+            Value::Array(items) if (2..=MAX_VECTOR).contains(&items.len()) && items.iter().all(Value::is_number) => Some(Kind::Vector {
+                len: items.len(),
+                whole: items.iter().all(|n| n.is_i64() || n.is_u64()),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether a value of `other` can be edited as this one: a vector's
+    /// numbers may be whole in one and not in the other.
+    fn accepts(self, other: Kind) -> bool {
+        match (self, other) {
+            (Kind::Vector { len: a, .. }, Kind::Vector { len: b, .. }) => a == b,
+            _ => self == other,
+        }
+    }
 }
 
 /// One setting.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
-    pub name: String,
+    pub key: String,
     pub kind: Kind,
     pub value: Value,
     pub default: Value,
-    pub description: &'static str,
-    pub access: Access,
 }
 
 impl Entry {
-    /// Differs from its default: the Legacy window's `*` column.
-    pub fn modified(&self) -> bool {
+    /// `isDefault()`, the star of the Legacy Viewer's list.
+    pub fn changed(&self) -> bool {
         self.value != self.default
     }
-
-    /// The Rust type of the setting (`f32`, `u8`…), empty when unknown.
-    pub fn ty(&self) -> &'static str {
-        info_of(&self.name).map(|f| f.ty).unwrap_or("")
-    }
 }
 
-/// The settings as they are now, sorted by name.
-pub struct Registry {
-    entries: Vec<Entry>,
+/// What RLVa forbids changing at the moment; the same rule for Preferences
+/// (`ui/options/cx.rs`) and the Debug Settings window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Locks {
+    /// `@setcam` and friends: LLFloaterPreference greys the camera preset.
+    pub camera_preset: bool,
+    /// A camera owner holds the field of view.
+    pub camera_fov: bool,
+    /// `@sendim`: rlvhandler.cpp hides DoNotDisturbModeResponse.
+    pub sendim: bool,
+    /// Any restriction is held: stricter than the Legacy Viewer, where RLVa's
+    /// own settings only apply at the next start.
+    pub restricted: bool,
 }
 
-impl Registry {
-    pub fn of(settings: &Settings) -> Registry {
-        let current = serde_json::to_value(settings).unwrap_or(Value::Null);
-        let defaults = default_tree();
-        let mut entries = Vec::new();
-        flatten(&current, defaults, "", &mut entries);
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Registry { entries }
-    }
-
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
-    }
-
-    pub fn get(&self, name: &str) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.name == name)
-    }
-
-    /// The entries whose name or description contains `query`, case
-    /// insensitively (LLFloaterSettingsDebug::onUpdateFilter).
-    pub fn matching<'a>(&'a self, query: &str) -> impl Iterator<Item = &'a Entry> + 'a {
-        let query = query.trim().to_lowercase();
-        self.entries()
-            .iter()
-            .filter(move |e| query.is_empty() || e.name.to_lowercase().contains(&query) || e.description.to_lowercase().contains(&query))
-    }
-
-    /// Sets `name` to `value` in `settings`, typed by serde: the error says
-    /// why a value is refused (a wrong type, out of range, an unknown
-    /// variant), in serde's words. A read-only, hidden or unknown name is
-    /// refused too.
-    pub fn set(settings: &mut Settings, name: &str, value: Value) -> Result<(), String> {
-        if access_of(name) != Access::Editable {
-            return Err(format!("{name} is read-only"));
+impl Locks {
+    pub fn locked(&self, key: &str) -> bool {
+        match key {
+            "camera.preset" | "camera.camera_offset" | "camera.focus_offset" | "camera.offset_scale" => self.camera_preset,
+            "camera.fov" => self.camera_fov,
+            "autoresponse.dnd_text" => self.sendim,
+            "rlva_enabled" => self.restricted,
+            _ => self.restricted && key.starts_with("rlva."),
         }
-        let mut tree = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
-        if !patch(&mut tree, name, value) {
-            return Err(format!("unknown setting {name}"));
-        }
-        let mut fresh: Settings = serde_json::from_value(tree).map_err(|e| e.to_string())?;
-        restore_runtime(&mut fresh, settings);
-        *settings = fresh.sanitized();
-        Ok(())
-    }
-
-    /// Back to the default (LLControlVariable::resetToDefault).
-    pub fn reset(settings: &mut Settings, name: &str) -> Result<(), String> {
-        let Some(default) = leaf(default_tree(), name).cloned() else {
-            return Err(format!("unknown setting {name}"));
-        };
-        Self::set(settings, name, default)
     }
 }
 
-fn default_tree() -> &'static Value {
-    static TREE: OnceLock<Value> = OnceLock::new();
-    TREE.get_or_init(|| serde_json::to_value(Settings::default()).unwrap_or(Value::Null))
+/// Whether the setting is kept out of the list, whatever its value.
+fn hidden(key: &str) -> bool {
+    HIDDEN.contains(&key) || super::backup::is_this_pc(key)
 }
 
-fn access_of(name: &str) -> Access {
-    let first = name.split('.').next().unwrap_or(name);
-    let last = name.rsplit('.').next().unwrap_or(name);
-    if HIDDEN.contains(&first) {
-        return Access::ReadOnly;
+/// A UUID anywhere in `text`: 8-4-4-4-12 hexadecimal digits.
+fn holds_uuid(text: &str) -> bool {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(35)).any(|start| {
+        let mut at = start;
+        GROUPS.iter().enumerate().all(|(i, len)| {
+            let digits = bytes[at..at + len].iter().all(u8::is_ascii_hexdigit);
+            at += len;
+            let dash = i == GROUPS.len() - 1 || bytes[at] == b'-';
+            at += 1;
+            digits && dash
+        })
+    })
+}
+
+fn shows_an_id(value: &Value) -> bool {
+    value.as_str().is_some_and(holds_uuid)
+}
+
+/// The default settings in the form the list compares with.
+pub fn defaults() -> Value {
+    document(&Settings::default())
+}
+
+/// The file's form of `settings`; an object even if serialisation failed, in
+/// which case nothing is listed.
+fn document(settings: &Settings) -> Value {
+    serde_json::to_value(settings).unwrap_or_else(|e| {
+        log::warn!("debug settings: the settings cannot be read ({e})");
+        Value::Object(Map::new())
+    })
+}
+
+/// Every setting that can be edited, sorted by key.
+pub fn entries(settings: &Settings, defaults: &Value) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let current = document(&settings.to_saved());
+    if let (Value::Object(values), Value::Object(defaults)) = (&current, defaults) {
+        walk("", values, defaults, &mut out);
     }
-    if READ_ONLY.contains(&first) {
-        return Access::ReadOnly;
-    }
-    if ["_location", "_dir", "_folder", "_path"].iter().any(|s| last.ends_with(s)) {
-        return Access::ReadOnly;
-    }
-    Access::Editable
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    out
 }
 
-/// The scanned field of `name`, through the structs the tree walks.
-fn info_of(name: &str) -> Option<&'static Field> {
-    let mut tree = default_tree();
-    let mut structure = root_struct();
-    let mut segments = name.split('.').peekable();
-    while let Some(segment) = segments.next() {
-        let field = structure?.fields.iter().find(|f| f.json == segment)?;
-        tree = tree.get(segment)?;
-        if segments.peek().is_none() {
-            return Some(field);
-        }
-        structure = struct_for(field.ty, tree);
-    }
-    None
-}
-
-fn root_struct() -> Option<&'static Struct> {
-    static ROOT: OnceLock<Option<&'static Struct>> = OnceLock::new();
-    *ROOT.get_or_init(|| struct_for("Settings", default_tree()))
-}
-
-/// The scanned struct of a field typed `ty` whose value is `object`:
-/// among the structs of that simple name (several are called `Settings`),
-/// the one whose fields match the object's keys best.
-fn struct_for(ty: &str, object: &Value) -> Option<&'static Struct> {
-    let keys = object.as_object()?;
-    let simple = simple_type(ty);
-    scan::STRUCTS
-        .iter()
-        .filter(|s| s.name == simple)
-        .map(|s| (s.fields.iter().filter(|f| !f.skipped && keys.contains_key(f.json)).count(), s))
-        .filter(|(overlap, _)| *overlap > 0)
-        .max_by_key(|(overlap, _)| *overlap)
-        .map(|(_, s)| s)
-}
-
-/// `Option<crate::camera::CameraSettings>` → `CameraSettings`.
-fn simple_type(ty: &str) -> &str {
-    let inner = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')).unwrap_or(ty);
-    inner.rsplit("::").next().unwrap_or(inner).trim()
-}
-
-fn is_map_type(ty: &str) -> bool {
-    ty.contains("HashMap<") || ty.contains("BTreeMap<")
-}
-
-fn identifier_like(key: &str) -> bool {
-    key.starts_with(|c: char| c.is_ascii_lowercase()) && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-}
-
-/// The leaves of `current` under `prefix`, with their defaults.
-fn flatten(current: &Value, defaults: &Value, prefix: &str, out: &mut Vec<Entry>) {
-    let Some(object) = current.as_object() else {
-        return;
-    };
-    let structure = if prefix.is_empty() {
-        root_struct()
-    } else {
-        info_of(prefix).and_then(|f| struct_for(f.ty, current))
-    };
-    for (key, value) in object {
-        let name = if prefix.is_empty() {
-            key.clone()
+/// A setting exists when the defaults hold it: a key only some files have (an
+/// account in a map, a list element) is not a setting of its own.
+fn walk(prefix: &str, values: &Map<String, Value>, defaults: &Map<String, Value>, out: &mut Vec<Entry>) {
+    for (name, default) in defaults {
+        let key = if prefix.is_empty() {
+            name.clone()
         } else {
-            format!("{prefix}.{key}")
+            format!("{prefix}.{name}")
         };
-        if HIDDEN.contains(&name.as_str()) {
+        let Some(value) = values.get(name) else {
+            continue;
+        };
+        if hidden(&key) {
             continue;
         }
-        let field = structure.and_then(|s| s.fields.iter().find(|f| f.json == key));
-        let ty = field.map(|f| f.ty).unwrap_or("");
-        let default = defaults.get(key).unwrap_or(&Value::Null);
-        match value {
-            Value::Object(inner) => {
-                // a map (by account, by name) is not a list of settings
-                if is_map_type(ty) || !inner.keys().all(|k| identifier_like(k)) {
-                    continue;
-                }
-                flatten(value, default, &name, out);
-            }
-            Value::Array(items) => {
-                if items.is_empty() || !items.iter().all(Value::is_number) {
-                    continue;
-                }
-                let kind = if simple_type(ty) == "Rgba" && items.len() == 4 {
-                    Kind::Color
-                } else {
-                    Kind::Vector(items.len())
-                };
-                out.push(entry(name, kind, value, default, field));
-            }
-            Value::Null => out.push(entry(name, Kind::Null, value, default, field)),
-            Value::Bool(_) => out.push(entry(name, Kind::Bool, value, default, field)),
-            Value::Number(n) => {
-                let kind = if n.is_f64() || ty.starts_with('f') {
-                    Kind::Float
-                } else {
-                    let (min, max) = integer_range(ty);
-                    Kind::Integer { min, max }
-                };
-                out.push(entry(name, kind, value, default, field));
-            }
-            Value::String(_) => {
-                let kind = match choices_of(&name, ty) {
-                    Some(variants) => Kind::Choice(variants),
-                    None => Kind::Text,
-                };
-                out.push(entry(name, kind, value, default, field));
-            }
+        if let (Value::Object(values), Value::Object(defaults)) = (value, default) {
+            walk(&key, values, defaults, out);
+            continue;
         }
-    }
-}
-
-fn entry(name: String, kind: Kind, value: &Value, default: &Value, field: Option<&'static Field>) -> Entry {
-    let access = if kind == Kind::Null { Access::ReadOnly } else { access_of(&name) };
-    Entry {
-        name,
-        kind,
-        value: value.clone(),
-        default: default.clone(),
-        description: field.map(|f| f.doc).unwrap_or(""),
-        access,
-    }
-}
-
-fn integer_range(ty: &str) -> (f64, f64) {
-    match simple_type(ty) {
-        "u8" => (0.0, f64::from(u8::MAX)),
-        "u16" => (0.0, f64::from(u16::MAX)),
-        "u32" => (0.0, f64::from(u32::MAX)),
-        "u64" | "usize" => (0.0, u64::MAX as f64),
-        "i8" => (f64::from(i8::MIN), f64::from(i8::MAX)),
-        "i16" => (f64::from(i16::MIN), f64::from(i16::MAX)),
-        "i32" => (f64::from(i32::MIN), f64::from(i32::MAX)),
-        _ => (i64::MIN as f64, i64::MAX as f64),
-    }
-}
-
-/// The variants of the enum at `name`, None for a free text. Found once
-/// per name by reading the default tree with an impossible string there:
-/// serde's error names the variants ("unknown variant `…`, expected one of
-/// `Aurora`, `Classic`"). A `String` field is never probed.
-fn choices_of(name: &str, ty: &str) -> Option<Vec<String>> {
-    if simple_type(ty) == "String" {
-        return None;
-    }
-    static CHOICES: OnceLock<parking_lot::Mutex<HashMap<String, Option<Vec<String>>>>> = OnceLock::new();
-    let cache = CHOICES.get_or_init(Default::default);
-    if let Some(known) = cache.lock().get(name) {
-        return known.clone();
-    }
-    let mut tree = default_tree().clone();
-    let found = if patch(&mut tree, name, Value::String("\u{1}aurora-probe".into())) {
-        serde_json::from_value::<Settings>(tree)
-            .err()
-            .and_then(|e| variants_in(&e.to_string()))
-    } else {
-        None
-    };
-    cache.lock().insert(name.to_owned(), found.clone());
-    found
-}
-
-/// The backticked names after "expected" in serde's unknown-variant message:
-/// "expected one of `A`, `B`, `C`", "expected `A` or `B`", "expected `A`".
-fn variants_in(message: &str) -> Option<Vec<String>> {
-    let (_, after) = message.split_once("expected")?;
-    let variants: Vec<String> = after
-        .split('`')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_owned)
-        .filter(|v| !v.is_empty())
-        .collect();
-    (!variants.is_empty()).then_some(variants)
-}
-
-fn leaf<'a>(tree: &'a Value, name: &str) -> Option<&'a Value> {
-    name.split('.').try_fold(tree, |node, segment| node.get(segment))
-}
-
-/// Replaces the value at `name`, which must exist; false otherwise.
-fn patch(tree: &mut Value, name: &str, value: Value) -> bool {
-    let mut node = tree;
-    let mut segments = name.split('.').peekable();
-    while let Some(segment) = segments.next() {
-        let Some(child) = node.get_mut(segment) else {
-            return false;
+        let (Some(kind), Some(current)) = (Kind::of(default), Kind::of(value)) else {
+            continue;
         };
-        if segments.peek().is_none() {
-            *child = value;
-            return true;
+        if kind.accepts(current) && !shows_an_id(value) && !shows_an_id(default) {
+            out.push(Entry {
+                key,
+                kind,
+                value: value.clone(),
+                default: default.clone(),
+            });
         }
-        node = child;
-    }
-    false
-}
-
-/// A typed value from the text of an editor, by kind: what `set` is given.
-pub fn parse(kind: &Kind, text: &str) -> Result<Value, String> {
-    let text = text.trim();
-    match kind {
-        Kind::Bool => match text.to_lowercase().as_str() {
-            "true" | "1" => Ok(Value::Bool(true)),
-            "false" | "0" => Ok(Value::Bool(false)),
-            _ => Err(format!("{text:?} is not true or false")),
-        },
-        Kind::Integer { .. } => text
-            .parse::<i64>()
-            .map(Value::from)
-            .or_else(|_| text.parse::<u64>().map(Value::from))
-            .map_err(|e| e.to_string()),
-        Kind::Float => text.parse::<f64>().map_err(|e| e.to_string()).and_then(|f| {
-            serde_json::Number::from_f64(f)
-                .map(Value::Number)
-                .ok_or_else(|| "not a finite number".to_owned())
-        }),
-        Kind::Text | Kind::Choice(_) => Ok(Value::String(text.to_owned())),
-        Kind::Color | Kind::Vector(_) => {
-            let parts: Result<Vec<Value>, String> = text
-                .split(|c: char| c == ',' || c.is_whitespace())
-                .filter(|s| !s.is_empty())
-                .map(|s| parse(&Kind::Integer { min: 0.0, max: 0.0 }, s).or_else(|_| parse(&Kind::Float, s)))
-                .collect();
-            parts.map(Value::Array)
-        }
-        Kind::Null => Err("nothing to set".to_owned()),
     }
 }
 
-/// The text an editor shows for `value`: floats through `f32` when the
-/// field is one (serde writes a `f32` 0.1 as 0.10000000149011612).
-pub fn display(value: &Value, ty: &str) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => number_text(n, ty),
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items.iter().map(|v| display(v, ty)).collect::<Vec<_>>().join(", "),
-        Value::Object(_) => value.to_string(),
+/// Puts `value` in the setting `key` of the document.
+fn patch(document: &mut Value, key: &str, value: Value) -> Result<(), String> {
+    let mut at = document;
+    for part in key.split('.') {
+        at = at.get_mut(part).ok_or_else(|| format!("no setting {key}"))?;
     }
+    *at = value;
+    Ok(())
 }
 
-fn number_text(n: &serde_json::Number, ty: &str) -> String {
-    if let Some(f) = n.as_f64().filter(|_| n.is_f64()) {
-        if ty.contains("f64") {
-            f.to_string()
-        } else {
-            (f as f32).to_string()
-        }
-    } else {
-        n.to_string()
+/// Sets one setting. `value` must be understood by the setting's type as a
+/// settings file would be: otherwise nothing changes and the reason comes
+/// back. The setting's bounds apply (`Settings::sanitized`), as for a file.
+pub fn set(settings: &mut Settings, key: &str, value: Value) -> Result<(), String> {
+    if hidden(key) || shows_an_id(&value) {
+        return Err(format!("{key} cannot be changed here"));
+    }
+    let mut doc = document(settings);
+    patch(&mut doc, key, value)?;
+    let mut next: Settings = serde_json::from_value(doc).map_err(|e| e.to_string())?;
+    next.keep_session(settings);
+    *settings = next.sanitized();
+    Ok(())
+}
+
+impl Settings {
+    /// What the file does not hold and a change of one setting must not lose.
+    fn keep_session(&mut self, current: &Settings) {
+        self.debug = current.debug;
+        self.hover_height_account = current.hover_height_account;
+        self.photo_held = current.photo_held.clone();
+        self.newer_file = current.newer_file.clone();
+        self.new_profile = current.new_profile;
+        self.camera_limits_restored = current.camera_limits_restored;
+        self.mfa_hash = current.mfa_hash.clone();
+        self.build.select_probes = current.build.select_probes;
+        self.radar.alert_sounds = current.radar.alert_sounds;
+        self.world_overlays.land_owners = current.world_overlays.land_owners;
+        self.world_overlays.hide_particles = current.world_overlays.hide_particles;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    /// Every top-level field of `Settings` in the file is a setting of the
-    /// registry, a hidden one, or on this list of the maps and lists it
-    /// leaves out: a new field of another shape fails here, to be sorted.
-    #[test]
-    fn every_root_field_is_listed_hidden_or_left_out_on_purpose() {
-        const LEFT_OUT: &[&str] = &[
-            // structs holding only lists and maps (by account, by name)
-            "ao",
-            "gestures",
-            "keybinds",
-            "particle_filters",
-            "trusted_sites",
-            "world_context_menus",
-            // lists and maps
-            "bridge",
-            "camera_shots",
-            "friends_only",
-            "graphics_saved",
-            "grids",
-            // (`legacy_toolbars`, saved as `toolbar` only when not empty, is
-            // absent from the default tree: a map by account when present)
-            "movements",
-            "render_exceptions",
-        ];
-        let registry = Registry::of(&Settings::default());
-        let mut unsorted = Vec::new();
-        for key in default_tree().as_object().expect("settings are an object").keys() {
-            let listed = registry
-                .entries()
-                .iter()
-                .any(|e| e.name == *key || e.name.starts_with(&format!("{key}.")));
-            if !listed && !HIDDEN.contains(&key.as_str()) && !LEFT_OUT.contains(&key.as_str()) {
-                unsorted.push(key.clone());
-            }
+    /// A value different from `entry`'s, of its kind.
+    fn other_value(entry: &Entry) -> Value {
+        match entry.kind {
+            Kind::Bool => json!(!entry.value.as_bool().expect("a bool")),
+            Kind::Int => match entry.value.as_i64().expect("an integer") {
+                0 => json!(1),
+                n => json!(n - 1),
+            },
+            Kind::Float => json!(entry.value.as_f64().expect("a number") * 0.5 + 0.125),
+            Kind::Text | Kind::Vector { .. } => entry.value.clone(),
         }
-        assert!(unsorted.is_empty(), "settings neither listed nor sorted out: {unsorted:?}");
-        for key in LEFT_OUT {
+    }
+
+    fn entry_of(settings: &Settings, key: &str) -> Entry {
+        entries(settings, &defaults())
+            .into_iter()
+            .find(|e| e.key == key)
+            .unwrap_or_else(|| panic!("{key} is listed"))
+    }
+
+    #[test]
+    fn lists_nested_settings_sorted_with_their_kind() {
+        let list = entries(&Settings::default(), &defaults());
+        assert!(list.len() > 100, "{} settings", list.len());
+        assert!(list.windows(2).all(|w| w[0].key < w[1].key));
+        assert!(list.iter().all(|e| !e.changed()));
+        assert_eq!(entry_of(&Settings::default(), "show_huds").kind, Kind::Bool);
+        assert_eq!(entry_of(&Settings::default(), "camera.fov").kind, Kind::Float);
+        assert_eq!(entry_of(&Settings::default(), "language").kind, Kind::Text);
+    }
+
+    #[test]
+    fn the_login_this_pc_and_keys_are_never_listed() {
+        let mut s = Settings {
+            username: "someone".into(),
+            remember_username: true,
+            last_login: Some(("synthetic-grid".into(), "someone".into())),
+            ..Settings::default()
+        };
+        s.gifs.giphy_key = "a-service-key".into();
+        s.gifs.klipy_key = "another-key".into();
+        let list = entries(&s, &defaults());
+        for key in [
+            "username",
+            "remember_username",
+            "last_login",
+            "remember_password",
+            "mfa_hash",
+            "grid",
+            "custom_login_uri",
+            "start_location",
+            "start_region",
+            "window_x",
+            "cache_location",
+            "chat_log_location",
+            "settings_version",
+            "gifs.giphy_key",
+            "gifs.klipy_key",
+            "gifs.customer_id",
+            "audio.output_device",
+            "audio.input_device",
+        ] {
+            assert!(!list.iter().any(|e| e.key == key), "{key} is listed");
+            assert!(set(&mut s, key, json!("x")).is_err() || !hidden(key), "{key} can be set");
+        }
+        for e in &list {
+            let leaf = e.key.rsplit('.').next().expect("a key");
+            for word in ["password", "token", "secret", "credential", "hash"] {
+                assert!(!leaf.contains(word), "{} looks like a credential", e.key);
+            }
             assert!(
-                default_tree().get(key).is_some() && !registry.entries().iter().any(|e| e.name.starts_with(&format!("{key}."))),
-                "{key} is listed or gone: take it off LEFT_OUT"
+                !leaf.ends_with("_key") || e.kind != Kind::Text,
+                "{} looks like a service key",
+                e.key
             );
         }
     }
 
-    /// The `#[serde(skip)]` fields of the structs the registry walks are
-    /// exactly those `restore_runtime` carries over.
     #[test]
-    fn runtime_fields_are_all_restored() {
-        fn walk(tree: &Value, structure: Option<&'static Struct>, found: &mut Vec<String>) {
-            let Some(structure) = structure else {
-                return;
-            };
-            for field in structure.fields {
-                if field.runtime {
-                    found.push(format!("{}.{}", structure.name, field.rust));
-                }
-                if let Some(child) = tree.get(field.json).filter(|v| v.is_object())
-                    && !is_map_type(field.ty)
-                {
-                    walk(child, struct_for(field.ty, child), found);
-                }
+    fn a_text_holding_an_id_is_neither_listed_nor_written() {
+        let id = "89556747-24cb-43ed-920b-47caed15465f";
+        assert!(holds_uuid(id));
+        assert!(holds_uuid(&format!("secondlife:///app/agent/{id}/about")));
+        assert!(!holds_uuid("not-an-id"));
+        assert!(!holds_uuid("89556747-24cb-43ed-920b"));
+        assert!(!holds_uuid(""));
+        // multi-byte text around the place an id would be
+        assert!(!holds_uuid(&"é".repeat(40)));
+
+        let mut s = Settings::default();
+        assert!(
+            !entries(&s, &defaults())
+                .iter()
+                .any(|e| shows_an_id(&e.value) || shows_an_id(&e.default))
+        );
+        assert!(!entries(&s, &defaults()).iter().any(|e| e.key == "rlva.blocked_experiences"));
+        assert!(set(&mut s, "language", json!(id)).is_err());
+        // a setting that came to hold one leaves the list
+        s.browser_home_page = format!("https://example.org/{id}");
+        assert!(!entries(&s, &defaults()).iter().any(|e| e.key == "browser_home_page"));
+    }
+
+    #[test]
+    fn a_change_touches_that_setting_alone() {
+        let d = Settings::default();
+        let before = entries(&d, &defaults());
+        let mut offenders = Vec::new();
+        for entry in &before {
+            let mut s = d.clone();
+            set(&mut s, &entry.key, other_value(entry)).unwrap_or_else(|e| panic!("{}: {e}", entry.key));
+            let after = entries(&s, &defaults());
+            assert_eq!(before.len(), after.len(), "{}", entry.key);
+            let others: Vec<&str> = before
+                .iter()
+                .zip(&after)
+                .filter(|(b, a)| b.key != entry.key && b.value != a.value)
+                // the one setting `sanitized` makes follow another
+                .filter(|(b, _)| !(entry.key == "force_midday" && b.key == "time_of_day"))
+                .map(|(b, _)| b.key.as_str())
+                .collect();
+            if !others.is_empty() {
+                offenders.push(format!("{} -> {}", entry.key, others.join(", ")));
             }
         }
-        let mut found = Vec::new();
-        walk(default_tree(), root_struct(), &mut found);
-        found.sort();
-        let mut expected: Vec<String> = RESTORED.iter().map(|s| (*s).to_owned()).collect();
-        expected.sort();
-        assert_eq!(found, expected, "update RESTORED and restore_runtime");
+        assert!(offenders.is_empty(), "{}", offenders.join("\n"));
     }
 
     #[test]
-    fn values_round_trip_by_kind() {
+    fn a_value_of_the_wrong_type_changes_nothing() {
         let mut s = Settings::default();
-        Registry::set(&mut s, "draw_distance", parse(&Kind::Float, "192.5").expect("a float")).expect("set");
-        assert_eq!(s.draw_distance, 192.5);
-        Registry::set(&mut s, "show_huds", parse(&Kind::Bool, "false").expect("a bool")).expect("set");
-        assert!(!s.show_huds);
-        Registry::set(
-            &mut s,
-            "fps_limit",
-            parse(&Kind::Integer { min: 0.0, max: 255.0 }, "77").expect("an int"),
-        )
-        .expect("set");
-        assert_eq!(s.fps_limit, 77);
-        Registry::set(&mut s, "colors.tag_me", parse(&Kind::Color, "1, 2, 3, 4").expect("a colour")).expect("set");
-        assert_eq!(s.colors.tag_me, [1, 2, 3, 4]);
-        Registry::set(&mut s, "language", parse(&Kind::Text, "fr").expect("a text")).expect("set");
-        assert_eq!(s.language, "fr");
-        let registry = Registry::of(&s);
-        let entry = registry.get("colors.tag_me").expect("listed");
-        assert_eq!(entry.kind, Kind::Color);
-        assert!(entry.modified());
-        assert_eq!(display(&entry.value, entry.ty()), "1, 2, 3, 4");
-        assert_eq!(
-            registry.get("draw_distance").map(|e| display(&e.value, e.ty())).as_deref(),
-            Some("192.5")
-        );
+        let before = document(&s);
+        assert!(set(&mut s, "show_huds", json!("yes")).is_err());
+        assert!(set(&mut s, "camera.fov", json!("wide")).is_err());
+        assert!(set(&mut s, "update_mode", json!("not a mode")).is_err());
+        assert!(set(&mut s, "no.such.setting", json!(1)).is_err());
+        assert_eq!(before, document(&s));
     }
 
     #[test]
-    fn bad_values_are_refused_and_change_nothing() {
+    fn a_change_is_listed_as_changed_and_reset_by_its_default() {
+        let d = defaults();
         let mut s = Settings::default();
-        let before = serde_json::to_value(&s).expect("json");
-        assert!(Registry::set(&mut s, "time_of_day", Value::from(300)).is_err(), "300 is no u8");
-        assert!(Registry::set(&mut s, "draw_distance", Value::String("far".into())).is_err());
-        assert!(Registry::set(&mut s, "chat_style", Value::String("Nope".into())).is_err());
-        assert!(Registry::set(&mut s, "no.such.setting", Value::Bool(true)).is_err());
-        assert!(Registry::set(&mut s, "username", Value::String("x".into())).is_err(), "hidden");
-        assert!(
-            Registry::set(&mut s, "cache_location", Value::String("x".into())).is_err(),
-            "read-only"
-        );
-        assert!(parse(&Kind::Integer { min: 0.0, max: 1.0 }, "abc").is_err());
-        assert!(parse(&Kind::Bool, "maybe").is_err());
-        assert_eq!(serde_json::to_value(&s).expect("json"), before);
+        let was = s.show_huds;
+        set(&mut s, "show_huds", json!(!was)).expect("set");
+        assert_eq!(s.show_huds, !was);
+        let entry = entry_of(&s, "show_huds");
+        assert!(entry.changed());
+        set(&mut s, "show_huds", entry.default.clone()).expect("reset");
+        assert_eq!(s.show_huds, was);
+        assert!(!entries(&s, &d).iter().any(Entry::changed));
     }
 
     #[test]
-    fn reset_restores_the_default_and_clears_the_mark() {
+    fn the_bounds_of_a_settings_file_apply() {
         let mut s = Settings::default();
-        let default = s.draw_distance;
-        Registry::set(&mut s, "draw_distance", Value::from(64.0)).expect("set");
-        assert!(Registry::of(&s).get("draw_distance").expect("listed").modified());
-        Registry::reset(&mut s, "draw_distance").expect("reset");
-        assert_eq!(s.draw_distance, default);
-        assert!(!Registry::of(&s).get("draw_distance").expect("listed").modified());
+        set(&mut s, "fps_limit", json!(1_000_000)).expect("set");
+        assert_eq!(s.fps_limit, s.clone().sanitized().fps_limit);
+        assert!(s.fps_limit < 1_000_000);
     }
 
     #[test]
-    fn runtime_values_survive_a_change() {
-        let mut s = Settings::default();
-        s.world_overlays.hide_particles = true;
+    fn what_the_file_does_not_hold_survives_a_change() {
+        let mut s = Settings {
+            new_profile: true,
+            camera_limits_restored: true,
+            hover_height_account: Some(uuid::Uuid::from_u128(7)),
+            mfa_hash: "kept".into(),
+            ..Settings::default()
+        };
+        s.username = "someone".into();
+        s.debug.wireframe = true;
         s.build.select_probes = true;
         s.radar.alert_sounds = true;
-        Registry::set(&mut s, "show_huds", Value::Bool(false)).expect("set");
-        assert!(s.world_overlays.hide_particles && s.build.select_probes && s.radar.alert_sounds);
+        s.world_overlays.land_owners = true;
+        s.world_overlays.hide_particles = true;
+        set(&mut s, "show_huds", json!(false)).expect("set");
+        assert!(s.new_profile && s.camera_limits_restored && s.debug.wireframe);
+        assert!(s.build.select_probes && s.radar.alert_sounds);
+        assert!(s.world_overlays.land_owners && s.world_overlays.hide_particles);
+        assert_eq!(s.hover_height_account, Some(uuid::Uuid::from_u128(7)));
+        assert_eq!(s.mfa_hash, "kept");
+        assert_eq!(s.username, "someone");
     }
 
     #[test]
-    fn hidden_names_are_absent_and_paths_read_only() {
-        let registry = Registry::of(&Settings::default());
-        for hidden in HIDDEN {
-            assert!(registry.get(hidden).is_none(), "{hidden} listed");
+    fn rlva_locks_name_the_settings_they_hold() {
+        let free = Locks::default();
+        for key in [
+            "camera.preset",
+            "camera.fov",
+            "autoresponse.dnd_text",
+            "rlva_enabled",
+            "rlva.allow_ooc",
+        ] {
+            assert!(!free.locked(key), "{key}");
         }
-        assert_eq!(registry.get("cache_location").expect("listed").access, Access::ReadOnly);
-        assert_eq!(registry.get("draw_distance").expect("listed").access, Access::Editable);
-    }
-
-    #[test]
-    fn kinds_follow_the_rust_types() {
-        let registry = Registry::of(&Settings::default());
-        assert_eq!(registry.get("show_huds").expect("listed").kind, Kind::Bool);
-        assert_eq!(registry.get("draw_distance").expect("listed").kind, Kind::Float);
-        assert_eq!(
-            registry.get("time_of_day").expect("listed").kind,
-            Kind::Integer { min: 0.0, max: 255.0 }
-        );
-        assert_eq!(registry.get("language").expect("listed").kind, Kind::Text);
-        let chat_style = registry.get("chat_style").expect("listed");
-        let Kind::Choice(variants) = &chat_style.kind else {
-            panic!("chat_style is an enum: {:?}", chat_style.kind);
+        let camera = Locks {
+            camera_preset: true,
+            ..Locks::default()
         };
-        assert!(
-            variants.len() >= 2 && variants.iter().any(|v| chat_style.value == Value::String(v.clone())),
-            "{variants:?}"
-        );
-    }
-
-    #[test]
-    fn descriptions_come_from_the_doc_comments_and_name_the_legacy_setting() {
-        let registry = Registry::of(&Settings::default());
-        let language = registry.get("language_is_public").expect("listed");
-        assert!(language.description.contains("LanguageIsPublic"), "{:?}", language.description);
-        assert!(registry.matching("languageispublic").any(|e| e.name == "language_is_public"));
-        let nested = registry
-            .entries()
-            .iter()
-            .filter(|e| e.name.starts_with("camera.") && !e.description.is_empty())
-            .count();
-        assert!(nested > 0, "nested structs keep their doc comments");
-        let documented = registry.entries().iter().filter(|e| !e.description.is_empty()).count();
-        assert!(
-            documented * 2 > registry.entries().len(),
-            "{documented} of {} described",
-            registry.entries().len()
-        );
-    }
-
-    #[test]
-    fn serde_variant_messages_are_read() {
-        assert_eq!(
-            variants_in("unknown variant `x`, expected one of `Aurora`, `Classic`, `Plain`"),
-            Some(vec!["Aurora".into(), "Classic".into(), "Plain".into()])
-        );
-        assert_eq!(
-            variants_in("unknown variant `x`, expected `On` or `Off`"),
-            Some(vec!["On".into(), "Off".into()])
-        );
-        assert_eq!(variants_in("unknown variant `x`, expected `Only`"), Some(vec!["Only".into()]));
-        assert_eq!(variants_in("invalid type: string, found integer"), None);
-    }
-
-    #[test]
-    fn floats_display_through_their_type() {
-        let tenth = serde_json::to_value(0.1f32).expect("json");
-        assert_eq!(display(&tenth, "f32"), "0.1");
-        assert_eq!(display(&Value::from(3), "u8"), "3");
-        assert_eq!(display(&Value::Array(vec![Value::from(1), Value::from(2)]), "Rgba"), "1, 2");
+        assert!(camera.locked("camera.camera_offset") && !camera.locked("camera.fov"));
+        let fov = Locks {
+            camera_fov: true,
+            ..Locks::default()
+        };
+        assert!(fov.locked("camera.fov") && !fov.locked("camera.preset"));
+        let im = Locks {
+            sendim: true,
+            ..Locks::default()
+        };
+        assert!(im.locked("autoresponse.dnd_text") && !im.locked("autoresponse.autorespond_text"));
+        let held = Locks {
+            restricted: true,
+            ..Locks::default()
+        };
+        assert!(held.locked("rlva_enabled") && held.locked("rlva.allow_ooc"));
+        assert!(!held.locked("rlva_something_else") && !held.locked("show_huds"));
     }
 }
