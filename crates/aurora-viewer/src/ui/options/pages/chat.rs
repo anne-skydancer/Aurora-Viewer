@@ -34,6 +34,31 @@ pub fn page(cx: &mut Cx, tab: usize) {
                     tr!("ui-options-show-chat-channel-hint"),
                     &field!(show_chat_channel),
                 );
+                // the row of FSFloaterNearbyChat's recent emojis, a switch
+                // in place of its arrow: on, off with the Legacy chat style
+                // (its own switch, the one of the style in use shown)
+                let legacy = cx.s.chat_style == crate::settings::ChatStyle::Legacy;
+                cx.conditional(!legacy, |cx| {
+                    cx.toggle(
+                        tr!("ui-options-show-recent-emojis"),
+                        tr!("ui-options-show-recent-emojis-hint"),
+                        &field!(show_recent_emojis),
+                    );
+                });
+                cx.conditional(legacy, |cx| {
+                    cx.toggle(
+                        tr!("ui-options-show-recent-emojis-legacy"),
+                        tr!("ui-options-show-recent-emojis-legacy-hint"),
+                        &field!(show_recent_emojis_legacy),
+                    );
+                });
+                // an Aurora addition: favourites first in that row and a
+                // star tab in the picker, off
+                cx.toggle(
+                    tr!("ui-options-favorite-emojis"),
+                    tr!("ui-options-favorite-emojis-hint"),
+                    &field!(favorite_emojis),
+                );
                 // #475: objects' lines like the notices, off (not in the
                 // Legacy Viewer)
                 cx.toggle(
@@ -93,6 +118,15 @@ pub fn page(cx: &mut Cx, tab: usize) {
                     &field!(chat_toast_seconds),
                     0.0..=60.0,
                     " s",
+                );
+                // ConsoleMaxLines (panel_preferences_chat.xml): count the
+                // wrapped text rows, as LLConsole::draw does.
+                cx.slider(
+                    tr!("ui-options-chat-console-max-lines"),
+                    tr!("ui-options-chat-console-max-lines-hint"),
+                    &field!(chat_console_max_lines),
+                    0..=50,
+                    "",
                 );
                 // the Legacy Viewer's Chat › Visuals (UseChatBubbles and what
                 // depends on it; ChatBubbleOpacity is in its Colors), #673

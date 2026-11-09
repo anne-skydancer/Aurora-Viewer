@@ -72,11 +72,12 @@ pub struct NetStats {
     /// ObjectUpdate blocks not read (an ObjectData size the parser does not
     /// know): those objects never show (issue #2747).
     pub objects_unread: AtomicU64,
-    /// Sequence numbers skipped by incoming packets, and packets that came
-    /// after a later one (a resend, or out of order): the difference is what
-    /// is still missing.
+    /// Provisional sequence holes, and those filled before their deadline.
+    /// These are diagnostics, not confirmed losses.
     pub seq_gaps: AtomicU64,
     pub seq_late: AtomicU64,
+    /// Holes still missing after sixteen smoothed round trips (at most 5 s).
+    pub packets_lost: AtomicU64,
     pub agent_updates: AtomicU64,
     /// LogoutRequests sent, over the whole life of the client: a logout
     /// asked from outside the session's thread (the computer going to
@@ -139,6 +140,7 @@ pub struct NetStatsSnapshot {
     pub objects_unread: u64,
     pub seq_gaps: u64,
     pub seq_late: u64,
+    pub packets_lost: u64,
     pub agent_updates: u64,
 }
 
@@ -212,6 +214,7 @@ impl NetStats {
             objects_unread: l(&self.objects_unread),
             seq_gaps: l(&self.seq_gaps),
             seq_late: l(&self.seq_late),
+            packets_lost: l(&self.packets_lost),
             agent_updates: l(&self.agent_updates),
         }
     }
