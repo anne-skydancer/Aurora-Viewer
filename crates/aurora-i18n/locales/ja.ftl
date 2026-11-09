@@ -13578,6 +13578,7 @@ ui-options-chat-logs-clear = 会話の記録をクリア…
 ui-options-chat-logs-clear-title = 会話の記録をクリアしますか？
 ui-options-chat-logs-clear-text = これにより、過去の会話のログ、およびそのファイルのすべてのバックアップが削除されます。会話履歴のテキストは削除されません。
 ui-options-chat-logs-clear-confirm = クリア
+
 wearable-favorites-all = 全てのお気に入り
 wearable-favorites-empty = 装着可能な着用物やＨＵＤをドラッグしてリストに追加します。
 wearable-favorites-no-match = アイテムが見つかりませんでした。
@@ -13600,6 +13601,10 @@ wearable-favorites-delete-confirm =
     お気に入りの着用物のフォルダ「{ $name }」を削除してもよろしいですか？
 
     フォルダとその中のお気に入りリンクのみが削除されます。元のインベントリアイテムは削除されません。
+wearable-favorites-delete-refused =
+    フォルダ「{ $name }」にはリンクだけでなく元のインベントリアイテムが入っているため、削除されません。先に元のアイテムをフォルダの外へ移動してください。
+wearable-favorites-delete-unloaded =
+    フォルダ「{ $name }」はまだ読み込みが完了していないため、削除されません。内容の読み込みが終わってからもう一度お試しください。
 wearable-favorites-invalid-name =
     お気に入りの着用物のフォルダ「{ $name }」を作成できませんでした。
     フォルダ名に「/」または「\」を含めることはできません。

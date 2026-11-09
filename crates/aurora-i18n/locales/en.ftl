@@ -13605,6 +13605,7 @@ ui-options-chat-logs-clear = Clear conversation log…
 ui-options-chat-logs-clear-title = Clear the conversation log?
 ui-options-chat-logs-clear-text = This will delete the logs of previous conversations, and any backups of that file. The transcripts are not touched.
 ui-options-chat-logs-clear-confirm = Clear
+
 wearable-favorites-all = All Favorites
 wearable-favorites-empty = Drag wearable items here to add to list.
 wearable-favorites-no-match = No matching items found.
@@ -13627,6 +13628,10 @@ wearable-favorites-delete-confirm =
     Delete Favorite Wearables folder "{ $name }"?
 
     This removes the folder and its favorite links only. Original inventory items are not deleted.
+wearable-favorites-delete-refused =
+    The folder "{ $name }" holds original inventory items, not only links, so it is not deleted. Move the originals out of it first.
+wearable-favorites-delete-unloaded =
+    The folder "{ $name }" has not finished loading, so it is not deleted. Wait for its contents to load, then try again.
 wearable-favorites-invalid-name =
     Could not create Favorite Wearables folder "{ $name }".
     Folder names cannot contain / or \.
