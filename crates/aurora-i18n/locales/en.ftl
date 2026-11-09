@@ -13569,6 +13569,7 @@ picker-pipette-no-material = No copyable material found in your inventory.
 local-texture-preview-hint = Local texture — preview from a file on this computer.
 
 
+
 # Object linking: LLSelectMgr::linkObjects
 build-link-error-title = Unable to link objects
 build-link-downloading = Object information is still downloading. Please wait and try linking again.
@@ -13655,6 +13656,7 @@ capture-360-saved = Saved { $name }
 capture-360-failed = The 360° image could not be made.
 capture-360-save-failed = The 360° image could not be saved: { $error }
 capture-360-save-dialog = Save the 360° image
+
 
 # Debug Settings window (LLFloaterSettingsDebug)
 debug-settings-search = Search settings

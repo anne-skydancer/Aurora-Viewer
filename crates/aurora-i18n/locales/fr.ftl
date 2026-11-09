@@ -13565,6 +13565,7 @@ picker-pipette-no-material = Aucun matériau copiable trouvé dans votre inventa
 local-texture-preview-hint = Texture locale — aperçu d’un fichier de cet ordinateur.
 
 
+
 # Object linking: LLSelectMgr::linkObjects
 build-link-error-title = Impossible de lier les objets
 build-link-downloading = Les informations des objets sont en cours de téléchargement. Veuillez patienter puis réessayer.
@@ -13651,6 +13652,7 @@ capture-360-saved = { $name } enregistrée
 capture-360-failed = L'image 360° n'a pas pu être créée.
 capture-360-save-failed = L'image 360° n'a pas pu être enregistrée : { $error }
 capture-360-save-dialog = Enregistrer l'image 360°
+
 
 # Debug Settings window (LLFloaterSettingsDebug)
 debug-settings-search = Rechercher un paramètre

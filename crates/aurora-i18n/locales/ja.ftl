@@ -13542,6 +13542,7 @@ picker-pipette-no-material = コピー可能なマテリアルがインベント
 local-texture-preview-hint = ローカルテクスチャ — このコンピューターのファイルのプレビュー。
 
 
+
 # Object linking: LLSelectMgr::linkObjects
 build-link-error-title = オブジェクトをリンクできません
 build-link-downloading = オブジェクト情報をダウンロード中です。しばらく待ってから再度リンクしてください。
@@ -13628,6 +13629,7 @@ capture-360-saved = { $name }を保存しました
 capture-360-failed = ３６０度画像を作成できませんでした。
 capture-360-save-failed = ３６０度画像を保存できませんでした：{ $error }
 capture-360-save-dialog = ３６０度画像を保存
+
 
 # Debug Settings window (LLFloaterSettingsDebug)
 debug-settings-search = 設定を検索
