@@ -13564,6 +13564,7 @@ picker-pipette-no-material = Aucun matériau copiable trouvé dans votre inventa
 
 local-texture-preview-hint = Texture locale — aperçu d’un fichier de cet ordinateur.
 
+
 # Object linking: LLSelectMgr::linkObjects
 build-link-error-title = Impossible de lier les objets
 build-link-downloading = Les informations des objets sont en cours de téléchargement. Veuillez patienter puis réessayer.

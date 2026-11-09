@@ -265,6 +265,29 @@ pub fn now() -> i64 {
 /// A file being read.
 type Reading = crossbeam_channel::Receiver<std::io::Result<Option<Vec<u8>>>>;
 
+/// What the user removed from the log while an import was reading: its
+/// entries must not come back with the import's result.
+#[derive(Debug, Default)]
+pub struct Removals {
+    cleared: bool,
+    removed: Vec<(Uuid, i64)>,
+}
+
+impl Removals {
+    /// Drop from an import's entries what was cleared or removed.
+    pub fn filter(&self, incoming: &mut Vec<Conversation>) {
+        if self.cleared {
+            incoming.clear();
+        } else {
+            incoming.retain(|c| !self.removed.contains(&(c.session, c.time)));
+        }
+    }
+}
+
+/// The answer of a publication: written, or why not. A dropped job (full
+/// queue, thread gone) closes the channel without an answer.
+pub type Published = crossbeam_channel::Receiver<std::io::Result<()>>;
+
 /// The log of the account logged in.
 #[derive(Default)]
 pub struct Log {
@@ -276,8 +299,15 @@ pub struct Log {
     reading: Option<Reading>,
     /// What this session logged while the file was being read.
     early: Vec<Conversation>,
-    /// Changed since the last save.
+    /// Changed since the last save the worker acknowledged.
     dirty: bool,
+    /// Removals since an import started (None: no import under way).
+    removals: Option<Removals>,
+    /// Publications the worker has not answered yet.
+    publishing: Vec<Published>,
+    /// Wait before the next try after a failed save (doubles, up to a
+    /// minute); the plain interval otherwise.
+    retry: std::time::Duration,
     /// The file could not be read: it is never written over this session.
     unreadable: bool,
     saved_at: Option<std::time::Instant>,
@@ -292,6 +322,11 @@ pub struct Log {
 
 /// Time between two saves of a changing log.
 const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+/// Longest wait between two tries of a save that keeps failing.
+const RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long a logout or exit waits for a file still being read, so that the
+/// session's entries are merged into it and not lost.
+const READ_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl Log {
     /// Start a session's log (enableLogging): `reading` brings the file.
@@ -325,7 +360,32 @@ impl Log {
     /// is not written over.
     pub(super) fn poll_read(&mut self, now: i64) {
         let Some(rx) = &self.reading else { return };
-        let Ok(read) = rx.try_recv() else { return };
+        let read = match rx.try_recv() {
+            Ok(read) => read,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            // the job was dropped without an answer: as an unreadable file
+            Err(crossbeam_channel::TryRecvError::Disconnected) => Err(std::io::Error::other("the read job ended without an answer")),
+        };
+        self.apply_read(read, now);
+    }
+
+    /// The file is still being read.
+    pub(super) fn is_reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    /// Before a logout or an exit: wait (briefly) for the file still being
+    /// read and merge the session's entries into it, so that the last save
+    /// does not lose them. Gives up, and says so, when the disk is too slow.
+    pub(super) fn finish_read(&mut self, now: i64) {
+        let Some(rx) = &self.reading else { return };
+        match rx.recv_timeout(READ_WAIT) {
+            Ok(read) => self.apply_read(read, now),
+            Err(_) => log::warn!("conversation log: the file was still being read; this session's entries are not saved"),
+        }
+    }
+
+    fn apply_read(&mut self, read: std::io::Result<Option<Vec<u8>>>, now: i64) {
         self.reading = None;
         let (mut list, purged) = match read {
             Ok(Some(bytes)) => parse_file(&bytes, now),
@@ -346,6 +406,43 @@ impl Log {
         self.revision += 1;
     }
 
+    /// Collect the answers of the publications: a failed one leaves the log
+    /// dirty again, to be tried again after a longer wait; a written one
+    /// resets the wait.
+    pub(super) fn poll_saves(&mut self) {
+        let mut failed = false;
+        let mut written = false;
+        self.publishing.retain(|rx| match rx.try_recv() {
+            Ok(Ok(())) => {
+                written = true;
+                false
+            }
+            Ok(Err(_)) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                failed = true;
+                false
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => true,
+        });
+        if failed {
+            self.save_failed();
+        } else if written && self.publishing.is_empty() {
+            self.retry = SAVE_EVERY;
+        }
+    }
+
+    /// A save did not reach the disk: the log stays dirty, the next try waits
+    /// longer.
+    pub(super) fn save_failed(&mut self) {
+        self.dirty = true;
+        self.retry = (self.retry * 2).clamp(SAVE_EVERY, RETRY_MAX);
+        self.saved_at = Some(std::time::Instant::now());
+    }
+
+    /// The publication `take_save` asked for was queued.
+    pub(super) fn saving(&mut self, answer: Published) {
+        self.publishing.push(answer);
+    }
+
     fn entries(&mut self) -> &mut Vec<Conversation> {
         if self.reading.is_some() { &mut self.early } else { &mut self.list }
     }
@@ -358,6 +455,32 @@ impl Log {
             return;
         }
         if merge(self.entries(), vec![c], true) {
+            self.dirty = true;
+            self.revision += 1;
+        }
+    }
+
+    /// A conference's session id changed (the server's replaces the one we
+    /// made, processSessionInitializedReply): its entry, also one still
+    /// buffered while the file is read, and the open conversations' memory
+    /// follow, merged with an entry of the new id if there is one.
+    pub fn rekey(&mut self, from: Uuid, to: Uuid) {
+        if from == to {
+            return;
+        }
+        if self.known.remove(&from) {
+            self.known.insert(to);
+        }
+        let mut changed = false;
+        for list in [&mut self.list, &mut self.early] {
+            if let Some(i) = list.iter().position(|c| c.session == from) {
+                let mut c = list.remove(i);
+                c.session = to;
+                merge(list, vec![c], true);
+                changed = true;
+            }
+        }
+        if changed {
             self.dirty = true;
             self.revision += 1;
         }
@@ -401,11 +524,31 @@ impl Log {
             list.remove(i);
             self.dirty = true;
             self.revision += 1;
+            if let Some(r) = &mut self.removals {
+                r.removed.push((session, time));
+            }
         }
+    }
+
+    /// An import starts reading: note what is removed until its result.
+    pub fn watch_removals(&mut self) {
+        self.removals = Some(Removals::default());
+    }
+
+    /// The import's result is here: what was removed since it started.
+    pub fn take_removals(&mut self) -> Removals {
+        self.removals.take().unwrap_or_default()
     }
 
     /// onClearLogResponse: everything (the file is written empty).
     pub fn clear(&mut self) {
+        if let Some(r) = &mut self.removals {
+            r.cleared = true;
+        }
+        // a file still being read holds what is cleared: its answer is
+        // dropped (the receiver goes, the worker's send finds nobody), and
+        // the empty log is written over it
+        self.reading = None;
         self.list.clear();
         self.early.clear();
         self.dirty = true;
@@ -428,9 +571,10 @@ impl Log {
         if !self.dirty || self.reading.is_some() || self.unreadable {
             return None;
         }
-        if !now_or_never && self.saved_at.is_some_and(|t| t.elapsed() < SAVE_EVERY) {
+        if !now_or_never && self.saved_at.is_some_and(|t| t.elapsed() < self.retry.max(SAVE_EVERY)) {
             return None;
         }
+        // clean only until the worker answers: a failure sets it again
         self.dirty = false;
         self.saved_at = Some(std::time::Instant::now());
         Some(format_file(&self.list))
@@ -470,25 +614,27 @@ pub struct View<'a> {
 /// (rebuildList then sort): those whose name or time contain the filter
 /// (any case), without those of blocked residents unless asked; friends
 /// first when asked, then by name (A to Z) or by date (newest first).
-pub fn shown(list: &[Conversation], view: View, is_friend: impl Fn(&Uuid) -> bool, blocked: &HashSet<Uuid>) -> Vec<usize> {
+/// `names` are the names the window shows, one per entry of `list`.
+pub fn shown(list: &[Conversation], names: &[String], view: View, friends: &HashSet<Uuid>, blocked: &HashSet<Uuid>) -> Vec<usize> {
+    debug_assert_eq!(list.len(), names.len());
     let filter = view.filter.trim_start().to_uppercase();
+    let upper: Vec<String> = names.iter().map(|n| n.to_uppercase()).collect();
     let mut out: Vec<usize> = (0..list.len())
         .filter(|&i| {
             let c = &list[i];
-            let found = filter.is_empty() || c.name.to_uppercase().contains(&filter) || timestamp(c.time).to_uppercase().contains(&filter);
+            let found = filter.is_empty() || upper[i].contains(&filter) || timestamp(c.time).to_uppercase().contains(&filter);
             found && (view.show_blocked || !blocked.contains(&c.participant))
         })
         .collect();
-    let names: Vec<String> = list.iter().map(|c| c.name.to_uppercase()).collect();
     out.sort_by(|&a, &b| {
         let (x, y) = (&list[a], &list[b]);
         let friends = if view.friends_first {
-            is_friend(&y.participant).cmp(&is_friend(&x.participant))
+            friends.contains(&y.participant).cmp(&friends.contains(&x.participant))
         } else {
             std::cmp::Ordering::Equal
         };
         friends.then_with(|| match view.sort {
-            Sort::Name => names[a].cmp(&names[b]),
+            Sort::Name => upper[a].cmp(&upper[b]),
             Sort::Date => y.time.cmp(&x.time),
         })
     });
@@ -512,6 +658,29 @@ mod tests {
             participant: Uuid::from_u128(session + 1000),
             offline: false,
         }
+    }
+
+    /// `shown` with the names the entries carry.
+    fn show(list: &[Conversation], view: View, friends: &HashSet<Uuid>, blocked: &HashSet<Uuid>) -> Vec<usize> {
+        let names: Vec<String> = list.iter().map(|c| c.name.clone()).collect();
+        shown(list, &names, view, friends, blocked)
+    }
+
+    #[test]
+    fn the_filter_and_the_sort_use_the_names_the_window_shows() {
+        // an RLVa privacy name replaces the logged one in the filter too
+        let list = vec![entry(1, Kind::Private, "Jane Doe", 1), entry(2, Kind::Private, "Bob", 2)];
+        let shown_names = vec!["Anonymous 7".to_owned(), "Bob".to_owned()];
+        let view = |filter| View {
+            sort: Sort::Name,
+            friends_first: false,
+            show_blocked: true,
+            filter,
+        };
+        let none = HashSet::new();
+        assert!(shown(&list, &shown_names, view("jane"), &none, &none).is_empty());
+        assert_eq!(shown(&list, &shown_names, view("anonymous"), &none, &none), [0]);
+        assert_eq!(shown(&list, &shown_names, view(""), &none, &none), [0, 1]);
     }
 
     #[test]
@@ -638,21 +807,15 @@ mod tests {
             show_blocked: false,
             filter: "",
         };
-        assert_eq!(
-            names(shown(&list, view, |_| false, &none)),
-            ["Alice", "bob", "Carol's group", "dave"]
-        );
+        assert_eq!(names(show(&list, view, &none, &none)), ["Alice", "bob", "Carol's group", "dave"]);
         let by_date = View { sort: Sort::Date, ..view };
-        assert_eq!(
-            names(shown(&list, by_date, |_| false, &none)),
-            ["dave", "bob", "Carol's group", "Alice"]
-        );
+        assert_eq!(names(show(&list, by_date, &none, &none)), ["dave", "bob", "Carol's group", "Alice"]);
         let friends = View {
             friends_first: true,
             ..view
         };
         assert_eq!(
-            names(shown(&list, friends, |id| *id == friend, &none)),
+            names(show(&list, friends, &HashSet::from([friend]), &none)),
             ["dave", "Alice", "bob", "Carol's group"]
         );
     }
@@ -670,16 +833,16 @@ mod tests {
             show_blocked: false,
             filter,
         };
-        assert_eq!(shown(&list, view("  jane"), |_| false, &none), [0]);
-        assert_eq!(shown(&list, view("12/31"), |_| false, &none), [1]);
-        assert_eq!(shown(&list, view("nobody"), |_| false, &none).len(), 0);
+        assert_eq!(show(&list, view("  jane"), &none, &none), [0]);
+        assert_eq!(show(&list, view("12/31"), &none, &none), [1]);
+        assert_eq!(show(&list, view("nobody"), &none, &none).len(), 0);
         let blocked: HashSet<Uuid> = [list[1].participant].into();
-        assert_eq!(shown(&list, view(""), |_| false, &blocked), [0]);
+        assert_eq!(show(&list, view(""), &none, &blocked), [0]);
         let all = View {
             show_blocked: true,
             ..view("")
         };
-        assert_eq!(shown(&list, all, |_| false, &blocked), [0, 1]);
+        assert_eq!(show(&list, all, &none, &blocked), [0, 1]);
     }
 
     #[test]
@@ -707,5 +870,145 @@ mod tests {
         let b = Uuid::from_u128(0x0F);
         assert_eq!(private_session(a, b), Uuid::from_u128(0xFF));
         assert_eq!(private_session(a, b), private_session(b, a));
+    }
+
+    fn logging() -> Log {
+        Log {
+            logging: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_save_stays_dirty_until_the_worker_acknowledges_it() {
+        let mut log = logging();
+        log.log(entry(10, Kind::Private, "Jane", 1));
+        assert!(log.take_save(true).is_some());
+        // asked and not answered yet: nothing more to write
+        assert!(log.take_save(true).is_none());
+        // the worker could not write it: the next try writes it again
+        let (done, answer) = crossbeam_channel::bounded(1);
+        done.send(Err(std::io::Error::other("disk full"))).unwrap();
+        log.saving(answer);
+        log.poll_saves();
+        assert!(log.take_save(true).is_some());
+        // a job the queue dropped closes its channel: the same
+        let (done, answer) = crossbeam_channel::bounded::<std::io::Result<()>>(1);
+        drop(done);
+        log.saving(answer);
+        log.poll_saves();
+        assert!(log.take_save(true).is_some());
+        // an acknowledged one is done, and a failed save is not retried at once
+        let (done, answer) = crossbeam_channel::bounded(1);
+        done.send(Ok(())).unwrap();
+        log.saving(answer);
+        log.poll_saves();
+        assert!(log.take_save(true).is_none());
+        log.save_failed();
+        assert!(log.take_save(false).is_none(), "backs off");
+        assert!(log.take_save(true).is_some(), "but a logout tries at once");
+    }
+
+    #[test]
+    fn the_entries_logged_during_the_read_are_merged_before_the_last_save() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut log = Log::default();
+        log.start(Some(rx));
+        log.log(entry(30, Kind::Private, "Session", 2));
+        assert!(log.take_save(true).is_none(), "never over a file not read yet");
+        let file = format_file(&[entry(10, Kind::Private, "Before", 1)]);
+        tx.send(Ok(Some(file.into_bytes()))).unwrap();
+        log.finish_read(40);
+        let text = log.take_save(true).expect("the merged log is written");
+        assert_eq!(parse_file(text.as_bytes(), 40).0.len(), 2);
+    }
+
+    #[test]
+    fn a_dropped_read_job_ends_the_wait_and_keeps_the_session_entries() {
+        let (tx, rx) = crossbeam_channel::bounded::<std::io::Result<Option<Vec<u8>>>>(1);
+        let mut log = Log::default();
+        log.start(Some(rx));
+        log.log(entry(30, Kind::Private, "Session", 2));
+        drop(tx);
+        log.poll_read(40);
+        assert!(!log.is_reading());
+        assert_eq!(log.list.len(), 1);
+        assert!(log.take_save(true).is_none(), "never over a file that could not be read");
+    }
+
+    #[test]
+    fn what_the_user_removes_during_an_import_does_not_come_back_with_it() {
+        let mut log = logging();
+        log.log(entry(10, Kind::Private, "Jane", 1));
+        log.log(entry(20, Kind::Private, "Bob", 2));
+        let theirs = || {
+            vec![
+                entry(10, Kind::Private, "Jane", 1),
+                entry(20, Kind::Private, "Bob", 2),
+                entry(30, Kind::Group, "New", 3),
+            ]
+        };
+        // a removal: only that entry is held back
+        log.watch_removals();
+        log.remove(Uuid::from_u128(1), 10);
+        let mut incoming = theirs();
+        log.take_removals().filter(&mut incoming);
+        assert_eq!(incoming.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Bob", "New"]);
+        // the log cleared: nothing comes back
+        log.watch_removals();
+        log.clear();
+        let mut incoming = theirs();
+        log.take_removals().filter(&mut incoming);
+        assert!(incoming.is_empty());
+        // no import under way: nothing is held back
+        let mut incoming = theirs();
+        log.take_removals().filter(&mut incoming);
+        assert_eq!(incoming.len(), 3);
+    }
+
+    #[test]
+    fn a_conference_whose_session_id_changes_keeps_one_entry() {
+        let mut log = logging();
+        let (temp, server) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        log.log(entry(10, Kind::Conference, "Conference", 1));
+        log.known.insert(temp);
+        log.rekey(temp, server);
+        assert_eq!(log.list.len(), 1);
+        assert_eq!(log.list[0].session, server);
+        assert!(log.known.contains(&server) && !log.known.contains(&temp));
+        // the poll logged the new id first: the two entries become one
+        log.log(entry(20, Kind::Conference, "Conference", 3));
+        log.list[1].session = temp;
+        log.rekey(temp, server);
+        assert_eq!(log.list.len(), 1);
+        assert_eq!(log.list[0].time, 20);
+        // an entry buffered while the file is read follows too
+        let (_tx, rx) = crossbeam_channel::bounded(1);
+        let mut log = Log::default();
+        log.start(Some(rx));
+        log.log(entry(10, Kind::Conference, "Conference", 1));
+        log.rekey(temp, server);
+        assert_eq!(log.early[0].session, server);
+    }
+
+    #[test]
+    fn clearing_while_the_file_is_still_being_read_drops_the_old_list() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut log = Log::default();
+        log.start(Some(rx));
+        log.log(entry(100, Kind::Private, "Session", 1));
+        log.clear();
+        assert!(!log.is_reading(), "the read is no longer waited for");
+        // the worker answers anyway, with the old file
+        let old = format_file(&[entry(50, Kind::Private, "Old", 2)]);
+        let _ = tx.send(Ok(Some(old.into_bytes())));
+        log.poll_read(1_000);
+        assert!(log.list.is_empty(), "the old list does not come back");
+        // the empty log goes to the disk at once, over the old file
+        let saved = log.take_save(true).expect("written");
+        assert_eq!(parse_file(saved.as_bytes(), 1_000).0.len(), 0);
+        // what is logged afterwards is kept
+        log.log(entry(200, Kind::Private, "New", 3));
+        assert_eq!(log.list.len(), 1);
     }
 }

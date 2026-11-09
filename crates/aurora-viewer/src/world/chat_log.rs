@@ -183,10 +183,16 @@ impl ChatLog {
         let Some(path) = self.conversations_file() else {
             return;
         };
-        if let Some(text) = self.conversations.take_save(now)
-            && let Some(w) = self.worker()
-        {
-            w.publish(path, text.into_bytes());
+        if now {
+            // the entries logged while the file was being read are merged
+            // before the last save, not lost with the session
+            self.conversations.finish_read(conversations::now());
+        }
+        if let Some(text) = self.conversations.take_save(now) {
+            match self.worker().map(|w| w.publish(path, text.into_bytes())) {
+                Some(answer) => self.conversations.saving(answer),
+                None => self.conversations.save_failed(),
+            }
         }
     }
 
@@ -197,9 +203,12 @@ impl ChatLog {
             return;
         }
         self.conversations.poll_read(conversations::now());
+        self.conversations.poll_saves();
         match (self.cfg.log_conversations, self.conversations.logging) {
             (true, false) => self.start_conversations(),
-            (false, true) => {
+            // (a file still being read is waited for on the next frames, not
+            // on this one: the last save merges the session's entries into it)
+            (false, true) if !self.conversations.is_reading() => {
                 self.save_conversations(true);
                 self.conversations.stop();
             }
@@ -429,8 +438,12 @@ impl ChatLog {
             state: dir.with_extension("legacy-import.json"),
             dated: self.cfg.dated_names,
             skip_unchanged,
+            // the import at login leaves the conversation log alone when
+            // the user keeps none
+            conversations: !skip_unchanged || self.cfg.log_conversations,
             dir,
         };
+        self.conversations.watch_removals();
         self.importing = self.worker().and_then(|w| import::start(w.merge_port(), request));
         self.importing.is_some()
     }
@@ -444,8 +457,22 @@ impl ChatLog {
 
     /// The report of the last import, once.
     pub fn take_imported(&mut self) -> Option<import::Report> {
-        let report = self.importing.as_ref()?.report.try_recv().ok()?;
+        let mut report = self.importing.as_ref()?.report.try_recv().ok()?;
         self.importing = None;
+        // what the user did while the import ran wins: a cleared log gets
+        // nothing back, a removed entry stays removed
+        let removals = self.conversations.take_removals();
+        if report.at_login && !self.cfg.log_conversations {
+            // the log was switched off meanwhile: nothing taken in, nothing
+            // marked brought
+            report.conversations.clear();
+        } else {
+            if report.at_login {
+                // taken in, or removed by the user on purpose: not brought again
+                import::mark_brought_in_background(&report.state, &report.conversations);
+            }
+            removals.filter(&mut report.conversations);
+        }
         Some(report)
     }
 

@@ -13541,6 +13541,7 @@ picker-pipette-no-material = コピー可能なマテリアルがインベント
 
 local-texture-preview-hint = ローカルテクスチャ — このコンピューターのファイルのプレビュー。
 
+
 # Object linking: LLSelectMgr::linkObjects
 build-link-error-title = オブジェクトをリンクできません
 build-link-downloading = オブジェクト情報をダウンロード中です。しばらく待ってから再度リンクしてください。

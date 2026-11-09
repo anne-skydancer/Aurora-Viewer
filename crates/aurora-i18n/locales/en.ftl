@@ -13568,6 +13568,7 @@ picker-pipette-no-material = No copyable material found in your inventory.
 
 local-texture-preview-hint = Local texture — preview from a file on this computer.
 
+
 # Object linking: LLSelectMgr::linkObjects
 build-link-error-title = Unable to link objects
 build-link-downloading = Object information is still downloading. Please wait and try linking again.
