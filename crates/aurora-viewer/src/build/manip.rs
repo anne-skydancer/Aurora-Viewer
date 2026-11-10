@@ -3,7 +3,8 @@
 //! their grid snapping, snap rulers and the position readout.
 //!
 //! Sizes follow LL: handles keep a constant size on screen (50 px arrows,
-//! 100 px rotation sphere). Aurora uses thicker strokes and 14 px stretch
+//! 100 px rotation sphere), in interface points: like LL's
+//! LLUI::getScaleFactor(), the display scale grows them. Aurora uses thicker strokes and 14 px stretch
 //! boxes for readability, and scales the whole manipulator, pick areas
 //! included, by the "Manipulator size" setting (`gizmo_scale`). Objects follow the mouse locally;
 //! MultipleObjectUpdate goes out on release (stretching also every
@@ -588,7 +589,10 @@ impl Manip {
             return;
         };
         let cam = p.cam;
-        if s.select_limit().is_some_and(|max| f.pivot.distance(cam.eye) > max + 64.0) {
+        // HUD depth bounds place the orthographic eye independently of the
+        // avatar. World selection distance must not hide HUD handles (as in
+        // LLManipTranslate::render, indra/newview/llmaniptranslate.cpp).
+        if cam.hud.is_none() && s.select_limit().is_some_and(|max| f.pivot.distance(cam.eye) > max + 64.0) {
             return;
         }
         let drag = self.drag.as_ref().filter(|d| d.started);
@@ -771,7 +775,9 @@ impl Manip {
         if d.in_snap {
             let (a, b) = (center - sa * so, center + sa * so);
             p.guide_line(a, b, white, opacity);
-            let cone = cam.meters_for_pixels(center, ARROW_PX) / 4.0 * SNAP_ARROW_SCALE;
+            // LLManipTranslate's mConeSize: a quarter of the arrow, display
+            // scale and manipulator size included.
+            let cone = arrow_length(cam, f, center) / 4.0 * SNAP_ARROW_SCALE;
             p.tri(a - sa * cone, a + axis * cone, a - axis * cone, cam.at, fade(white, opacity));
             p.tri(b + sa * cone, b + axis * cone, b - axis * cone, cam.at, fade(white, opacity));
             p.flush();
@@ -1006,15 +1012,16 @@ fn snap_offset_axis(arrow: usize, at_abs: Vec3) -> usize {
     }
 }
 
-/// Arrow length (m) at `at`: LLManipTranslate's 50 px times the manipulator size.
+/// Arrow length (m) at `at`: LLManipTranslate's 50 px times the display
+/// scale and the manipulator size.
 pub(super) fn arrow_length(cam: &Cam, f: &Frame, at: Vec3) -> f32 {
-    cam.meters_for_pixels(at, ARROW_PX * f.size)
+    cam.meters_for_points(at, ARROW_PX * f.size)
 }
 
 /// Rotation sphere radius (m) at `c`: LLManipRotate's 100 px times the
-/// manipulator size.
+/// display scale and the manipulator size.
 pub(super) fn ring_radius(cam: &Cam, f: &Frame, c: Vec3) -> f32 {
-    let px = RING_PX * f.size;
+    let px = RING_PX * f.size * cam.ppp;
     if cam.hud.is_some() {
         return cam.meters_for_pixels(c, px);
     }
@@ -1498,7 +1505,7 @@ fn drag_update(
                 // Firestorm refuses to copy individual parts
             } else {
                 let mut by_region: HashMap<RegionHandle, Vec<u32>> = HashMap::new();
-                for m in &d.movers {
+                for m in d.movers.iter().filter(|m| super::copyable_object(world, m.idx)) {
                     by_region.entry(m.key.region).or_default().push(m.key.local_id);
                 }
                 for (handle, ids) in by_region {
@@ -2464,6 +2471,39 @@ mod tests {
         }
     }
 
+    /// LLUI::getScaleFactor in LLManipTranslate / Rotate: a window at 200 %
+    /// display scale has twice the pixels, and the handles cover twice as
+    /// many, the same size in interface points as at 100 %.
+    #[test]
+    fn handles_keep_their_size_in_points_at_any_display_scale() {
+        let (piv, at_100, f) = translate_view(1.0);
+        let at_200 = Cam::new(
+            at_100.eye,
+            piv,
+            at_100.view_proj,
+            at_100.fov_y,
+            at_100.width * 2.0,
+            at_100.height * 2.0,
+            2.0,
+        );
+        let points = |cam: &Cam, length: f32| {
+            let tip = cam.project(piv + Vec3::Z * length).unwrap();
+            cam.project(piv).unwrap().distance(tip)
+        };
+        let (arrow, ring) = (
+            points(&at_100, arrow_length(&at_100, &f, piv)),
+            points(&at_100, ring_radius(&at_100, &f, piv)),
+        );
+        assert!((points(&at_200, arrow_length(&at_200, &f, piv)) - arrow).abs() < 0.5, "{arrow}");
+        assert!((points(&at_200, ring_radius(&at_200, &f, piv)) - ring).abs() < 0.5, "{ring}");
+        // the arrow is picked on the same spot, in points, at both scales
+        for i in 0..3 {
+            let near_tip = at_100.project(piv + unit(i) * arrow_length(&at_100, &f, piv) * 0.9).unwrap();
+            assert_eq!(pick_translate(&at_100, &f, near_tip), Some(Part::Arrow(i)));
+            assert_eq!(pick_translate(&at_200, &f, near_tip), Some(Part::Arrow(i)));
+        }
+    }
+
     fn hud_world() -> World {
         let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
         for ev in crate::demo::events().into_iter().chain(crate::demo::hud::events()) {
@@ -2530,7 +2570,9 @@ mod tests {
         assert!((new_pos - new_rot * Vec3::Z * (new_scale.z * 0.5)).abs_diff_eq(anchor, 1e-5));
 
         // Disabling flexibility restores the ordinary centered edit pivot.
-        world.objects.get_mut(idx).unwrap().extra.flexible = None;
+        let object = world.objects.get_mut(idx).unwrap();
+        object.extra.flexible = None;
+        object.volume.path.curve_type = aurora_prim::params::LL_PCODE_PATH_LINE;
         assert!(
             frame(&world, &settings, &[key], true, now, None)
                 .unwrap()
@@ -2803,6 +2845,125 @@ mod tests {
         assert!(save_movers(&world, &[key], false, EditMode::Stretch, Instant::now()).is_empty());
         world.objects.get_mut(idx).unwrap().update_flags &= !crate::ui::context::flags::OBJECT_MOVE;
         assert!(save_movers(&world, &[key], false, EditMode::Move, Instant::now()).is_empty());
+    }
+
+    #[test]
+    fn hud_no_modify_gizmos_draw_beyond_world_selection_distance_and_keep_edit_restrictions() {
+        let mut world = hud_world();
+        for event in crate::demo::hud::no_modify_events() {
+            world.apply(event);
+        }
+        let root = world.objects.index_of_uuid(&crate::demo::hud::object(31, false).full_id).unwrap();
+        let key = world.objects.get(root).unwrap().key;
+        let settings = BuildSettings {
+            limit_select_distance: true,
+            max_select_distance: 128.0,
+            ..Default::default()
+        };
+        let cam = Cam::for_hud(aurora_render::HudView::new([1280, 720], 1.0, -513.0, 1.0), 1.0);
+        let now = Instant::now();
+        let paint = |world: &World, cam: &Cam, mode, linked| {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1280.0, 720.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    let painter = ui.ctx().layer_painter(egui::LayerId::background());
+                    let mut p = Painter3d::new(painter, cam, crate::theme::Theme::default().palette());
+                    Manip::default().draw(&mut p, world, &settings, &[key], linked, mode, now);
+                    p.flush();
+                },
+            );
+            // This paint-only test has no GPU to apply texture deltas.
+            output.textures_delta.clear();
+            output.shapes.iter().any(|s| !matches!(s.shape, egui::Shape::Noop))
+        };
+        for mode in [EditMode::Move, EditMode::Rotate] {
+            assert!(paint(&world, &cam, mode, false), "No-modify HUD {mode:?} handles must be visible");
+            assert!(!paint(&world, &cam, mode, true), "No linked-part edits without Modify");
+            let world_cam = Cam { hud: None, ..cam };
+            assert!(!paint(&world, &world_cam, mode, false), "Keep the world distance limit");
+        }
+        assert!(!paint(&world, &cam, EditMode::Stretch, false));
+        world.objects.get_mut(root).unwrap().update_flags &= !crate::ui::context::flags::OBJECT_MOVE;
+        for mode in [EditMode::Move, EditMode::Rotate] {
+            assert!(!paint(&world, &cam, mode, false), "The simulator's Move flag still applies");
+        }
+    }
+
+    #[test]
+    fn hud_no_modify_move_and_rotation_handles_update_only_the_whole_linkset() {
+        for mode in [EditMode::Move, EditMode::Rotate] {
+            let mut world = hud_world();
+            for event in crate::demo::hud::no_modify_events() {
+                world.apply(event);
+            }
+            let root = world.objects.index_of_uuid(&crate::demo::hud::object(31, false).full_id).unwrap();
+            let o = world.objects.get(root).unwrap();
+            let (key, position, rotation, scale, state) = (o.key, o.position, o.rotation, o.scale, o.state);
+            let children: Vec<_> = super::super::family(&world, root)
+                .into_iter()
+                .skip(1)
+                .map(|i| {
+                    let o = world.objects.get(i).unwrap();
+                    (i, o.position, o.rotation, o.scale)
+                })
+                .collect();
+            let settings = BuildSettings {
+                snap: false,
+                ..Default::default()
+            };
+            let now = Instant::now();
+            let cam = Cam::for_hud(
+                aurora_render::HudView::new([1280, 720], 1.0, -513.0, 1.0).in_area([0.0, 19.0, 1280.0, 720.0]),
+                1.0,
+            );
+            let f = frame(&world, &settings, &[key], false, now, None).unwrap();
+            let (start, end, part) = if mode == EditMode::Move {
+                let start = cam.project_px(f.pivot + Vec3::Y * arrow_length(&cam, &f, f.pivot) * 0.9).unwrap();
+                (start, (start.0 + 40.0, start.1), Part::Arrow(1))
+            } else {
+                let radius = ring_radius(&cam, &f, f.pivot);
+                let start = cam.project_px(f.pivot + Vec3::new(0.0, 0.6, 0.8) * radius).unwrap();
+                let end = cam.project_px(f.pivot + Vec3::new(0.0, 0.8, 0.6) * radius).unwrap();
+                (start, end, Part::Ring(0))
+            };
+            let mut manip = Manip::default();
+            assert!(manip.try_grab(&mut world, &settings, &cam, &[key], false, mode, start, now));
+            assert_eq!(manip.drag.as_ref().unwrap().part, part);
+            let mut out = Vec::new();
+            manip.update(
+                &mut world,
+                &settings,
+                &cam,
+                &[key],
+                false,
+                mode,
+                end,
+                false,
+                Mods::default(),
+                now,
+                &mut out,
+                None,
+            );
+            manip.release(&mut world, &settings, false, &mut out);
+            let o = world.objects.get(root).unwrap();
+            if mode == EditMode::Move {
+                assert!(o.position.abs_diff_eq(position - Vec3::Y * (40.0 / 701.0), 1e-5));
+                assert_eq!(o.rotation, rotation);
+            } else {
+                assert!(!o.rotation.abs_diff_eq(rotation, 1e-3));
+            }
+            assert_eq!((o.scale, o.state), (scale, state));
+            for (idx, pos, rot, scale) in children {
+                let child = world.objects.get(idx).unwrap();
+                assert_eq!((child.position, child.rotation, child.scale), (pos, rot, scale));
+            }
+            assert!(matches!(&out[..], [BuildCmd::Transform { updates, .. }]
+                if updates.len() == 1 && updates[0].local_id == key.local_id && updates[0].linked && updates[0].scale.is_none()));
+        }
     }
 
     #[test]
