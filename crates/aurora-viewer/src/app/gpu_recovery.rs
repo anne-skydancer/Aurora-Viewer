@@ -34,6 +34,7 @@ impl App {
         crate::window_hold::install(&window);
         // after window_hold's: its hook sits in front of that one
         crate::power::install(&window);
+        crate::slurl_handoff::window_ready(&window);
         Ok(window)
     }
 
