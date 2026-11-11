@@ -1985,6 +1985,11 @@ mod tests {
             email: None,
             exposure: 0.0,
             hdr: true,
+            shadows: ShadowView {
+                softness: 0.5,
+                intensity: 1.0,
+                soft: false,
+            },
             env: EnvView {
                 catalog,
                 own: crate::world::eep_env::LocalView::SHARED,
