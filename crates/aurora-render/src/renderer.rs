@@ -2148,7 +2148,11 @@ fn shadow_desc(label: &'static str, fs: Option<&'static str>) -> PipeDesc<'stati
 
 /// The Aurora semi-transparent caster (shadow_alpha.rs): `shadow`'s state
 /// with `fs_shadow_aurora` of its own module.
-pub(crate) fn shadow_alpha_pipeline(device: &wgpu::Device, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout) -> wgpu::RenderPipeline {
+pub(crate) fn shadow_alpha_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+) -> wgpu::RenderPipeline {
     make_pipeline(device, module, layout, shadow_desc("shadow alpha aurora", Some("fs_shadow_aurora")))
 }
 
@@ -7091,7 +7095,13 @@ impl Backend {
             let (frame_seed, flags) = crate::shadow_alpha::frame_seed(self.frame_index, rotating);
             let res = self.shadow_size;
             let origins = (0..CASCADES)
-                .map(|ci| Some(crate::shadow_alpha::cascade_origin(((ci as u32 % 2) * res, (ci as u32 / 2) * res), res, cascade_snaps[ci])))
+                .map(|ci| {
+                    Some(crate::shadow_alpha::cascade_origin(
+                        ((ci as u32 % 2) * res, (ci as u32 / 2) * res),
+                        res,
+                        cascade_snaps[ci],
+                    ))
+                })
                 .chain(spot_vp.iter().enumerate().map(|(k, vp)| {
                     // a projector's map has its own frame: the cells start at its corner
                     vp.map(|_| {
@@ -7101,11 +7111,7 @@ impl Backend {
                 }));
             for (i, origin) in origins.enumerate() {
                 let Some(origin) = origin else { continue };
-                let u = crate::shadow_alpha::ShadowStU {
-                    origin,
-                    frame_seed,
-                    flags,
-                };
+                let u = crate::shadow_alpha::ShadowStU { origin, frame_seed, flags };
                 self.queue.write_buffer(&self.shadow_st_buffers[i], 0, bytemuck::bytes_of(&u));
             }
         }
@@ -7801,7 +7807,11 @@ impl Backend {
                             // is the nearest whatever the order
                             let (pipe, (off, count), bin) = match step {
                                 Opaque(_) => (&self.pipelines.shadow_depth, rg.shadow[ci], BIN_SHADOW + ci),
-                                _ => (aurora_pipe.as_ref().unwrap_or(&self.pipelines.shadow), rg.shadow_alpha[ci], BIN_SHADOW_ALPHA + ci),
+                                _ => (
+                                    aurora_pipe.as_ref().unwrap_or(&self.pipelines.shadow),
+                                    rg.shadow_alpha[ci],
+                                    BIN_SHADOW_ALPHA + ci,
+                                ),
                             };
                             if count > 0 || gpu_on {
                                 pass.set_pipeline(pipe);

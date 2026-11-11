@@ -54,8 +54,8 @@ mod render_thread;
 mod renderer;
 mod rlva;
 mod selection;
-pub mod shadow_cull;
 mod shadow_alpha;
+pub mod shadow_cull;
 mod shadow_merge;
 #[cfg(test)]
 mod specular_aa;

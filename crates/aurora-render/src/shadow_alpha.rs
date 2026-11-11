@@ -211,7 +211,10 @@ fn build(
         log::warn!("semi-transparent shadows: the Aurora caster could not be built, Legacy kept: {e}");
         return None;
     }
-    log::info!("semi-transparent shadows: the Aurora caster built in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+    log::info!(
+        "semi-transparent shadows: the Aurora caster built in {:.0} ms",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
     Some(pipeline)
 }
 
@@ -360,7 +363,9 @@ mod tests {
         let mut lit = 0;
         for y in 0..size {
             for x in 0..size {
-                let hit = layers.iter().any(|&(tie, prim, back, a)| keep((x, y), seed(tie, prim * 2 + back, 0, false), a));
+                let hit = layers
+                    .iter()
+                    .any(|&(tie, prim, back, a)| keep((x, y), seed(tie, prim * 2 + back, 0, false), a));
                 lit += i32::from(!hit);
             }
         }
@@ -407,7 +412,10 @@ mod tests {
         let proj = glam::camera::rh::proj::directx::orthographic(-radius, radius, -radius, radius, 0.1, 100.0);
         let c = (proj * view).project_point3(p);
         let half = res as f32 / 2.0;
-        let (px, py) = ((c.x * half + half).floor() as i32 + tile.0 as i32, (half - c.y * half).floor() as i32 + tile.1 as i32);
+        let (px, py) = (
+            (c.x * half + half).floor() as i32 + tile.0 as i32,
+            (half - c.y * half).floor() as i32 + tile.1 as i32,
+        );
         let o = cascade_origin(tile, res, n);
         (px - o[0], py - o[1])
     }
@@ -514,7 +522,11 @@ mod tests {
 
     #[test]
     fn the_default_scene_module_does_not_know_the_aurora_rule() {
-        for src in [include_str!("shaders/object.wgsl"), include_str!("shaders/env.wgsl"), crate::COMMON_SHADER] {
+        for src in [
+            include_str!("shaders/object.wgsl"),
+            include_str!("shaders/env.wgsl"),
+            crate::COMMON_SHADER,
+        ] {
             assert!(!src.contains("fs_shadow_aurora") && !src.contains("shadow_st") && !src.contains("sst_"));
         }
     }
@@ -615,7 +627,7 @@ struct Out {{ @builtin(position) clip: vec4<f32>, @location(0) @interpolate(flat
         );
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 256 * 256 * 4,
+            size: crate::readback::readback_size(256 * 256 * 4),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -653,7 +665,7 @@ struct Out {{ @builtin(position) clip: vec4<f32>, @location(0) @interpolate(flat
         readback.map_async(wgpu::MapMode::Read, .., |r| r.expect("readback"));
         device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU completion");
         let bytes = readback.get_mapped_range(..).expect("pixels").to_vec();
-        bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+        bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
     }
 
     fn pane(alpha: f32, tie: u32, depth: f32) -> [u32; 4] {
@@ -684,7 +696,11 @@ struct Out {{ @builtin(position) clip: vec4<f32>, @location(0) @interpolate(flat
             println!("{name}: {v:.4} (want {want:.2} +- 0.03)");
             assert!((v - want).abs() < 0.03, "{name}: {v} vs {want}");
         };
-        near("one 0.5 pane", lit(&gpu_depths(&device, &queue, &[pane(0.5, 1, 0.3)], [0, 0])), 0.50);
+        near(
+            "one 0.5 pane",
+            lit(&gpu_depths(&device, &queue, &[pane(0.5, 1, 0.3)], [0, 0])),
+            0.50,
+        );
         near(
             "two stacked 0.5 panes",
             lit(&gpu_depths(&device, &queue, &[pane(0.5, 1, 0.3), pane(0.5, 2, 0.4)], [0, 0])),
