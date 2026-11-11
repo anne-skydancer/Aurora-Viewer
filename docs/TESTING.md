@@ -455,7 +455,9 @@ the background still applies outside screenshots.
 | `AURORA_DEMO_JOYSTICK=<mode>` | Synthetic joystick input, preferences, lens reset gestures or an independent six-axis camera flight |
 | `AURORA_CAPTURE=<file.png>` | Saves a screenshot of the frame |
 | `AURORA_CAPTURE_FRAMES=<n>` | Frame captured (240 by default) |
+| `AURORA_CAPTURE_TIMES=<s>[,<s>…]` | Captures at those seconds of a camera path run by time (`AURORA_DEMO_CAMERA=hair`), the same place in every run |
 | `AURORA_CAPTURE_EXIT=1` | Quits after the screenshot |
+| `AURORA_EXIT_AFTER=<seconds>` | Quits cleanly after that many seconds of frames (measurement runs of a camera that moves by time); demo or timed runs only |
 | `AURORA_DEMO_RENDER_TEXTURE=1` | Captures the demo world through a caller-owned render target |
 | `AURORA_DEMO_XR_DEVICE=1` | Uses OpenXR-compatible Vulkan initialization for the Linux demo |
 | `AURORA_OPENXR_LOADER=<path>` | Explicit macOS OpenXR loader dylib for runtime tests |
@@ -920,6 +922,26 @@ Several frames separated by commas (`2500,2600`) save one file each,
 `<file>-<frame>.png`. The frames-per-second cap in the background ("Limit
 when unfocused") is ignored during a screenshot.
 
+`AURORA_CAPTURE_TIMES`: with a demo camera that moves by time from frame
+600 (`AURORA_DEMO_CAMERA=hair`), one capture per time, `<file>-t<s>.png`
+(`1.5,5,5.0167` gives `-t1.5`, `-t5`, `-t5.0167`). When the camera's clock
+reaches a time, it is set to exactly that time and held there until the
+picture is saved, then the path goes on: whatever the frame rate, every run
+captures the camera at the same point of the path, so that the methods of a
+setting can be compared there (two times 1/60 s apart give a frame pair,
+the flicker of a 60 fps step). The
+avatars hold still from the start (their skeletons paused, as in the photo
+mode's frozen world): the idle sway, a degree of the torso, would otherwise
+move the hair on the head by several pixels between runs. Without
+`AURORA_CAPTURE_FRAMES`, no frame is captured by number;
+`AURORA_CAPTURE_EXIT=1` quits after the last one. The log gives `frame <n>
+captured to <file> (camera clock <s> s)`.
+
+`AURORA_EXIT_AFTER=<seconds>`: a clean exit once that many seconds of frames
+have run, for unattended measurement runs of a camera that moves by time.
+Honoured only in a demo (`AURORA_DEMO`) or a timed run (`AURORA_CAPTURE`,
+`AURORA_PROFILE`); a normal session on a grid ignores it.
+
 ## Camera, movement and pointer
 
 | Variable | Effect |
@@ -1204,15 +1226,32 @@ when unfocused") is ignored during a screenshot.
   trigger plain G (snap / guide). Releasing a key first pressed without
   AltGr must always release it, even if AltGr was held in the meantime.
 
-- **`AURORA_DEMO_CAMERA=alt,x,y|altgr,x,y|pan,x,y|zoom,x,y|crouch-alt,x,y|crouch-pan,x,y|crouch-zoom,x,y|close,x,y[,n]|drift,x,y[,n]|zoom-resident|zoom-unloaded|tag|ml|ml-alt|ml-zoom|ml-zoom-alt|wheel|wheel-chat|fly|sit|sit-ml|sit-ml-reclined|scripted|scripted-sit`**:
+- **`AURORA_DEMO_CAMERA=alt,x,y|altgr,x,y|pan,x,y|zoom,x,y|crouch-alt,x,y|crouch-pan,x,y|crouch-zoom,x,y|close,x,y[,n]|hair|drift,x,y[,n]|orbit,x,y[,px]|zoom-resident|zoom-unloaded|tag|ml|ml-alt|ml-zoom|ml-zoom-alt|wheel|wheel-chat|fly|sit|sit-ml|sit-ml-reclined|scripted|scripted-sit`**:
   scenario logged under `demo camera` — Alt+click at (x, y) then drag and
   return while walking; `altgr`: the same orbit with AltGr alone held, as
   winit reports it (neither Ctrl nor Alt), so its `demo camera` lines match
   those of `alt` frame for frame; `close`: Alt+click at (x, y) at frame 600, zoom for
   n frames (60 by default), then the camera no longer moves (close-up with a
-  fixed camera, to compare consecutive screenshots); `drift`: the same
+  fixed camera, to compare consecutive screenshots; the drag is per frame
+  and the focus animation per second, so the depth reached depends on the
+  frame rate: use `hair` to compare runs); `hair`: the fly-through of the 400 strand cards
+  (`AURORA_DEMO_HAIR_CARDS=400`) by the scripted camera, locked on a path
+  fixed in our avatar's head frame (it follows the avatar as it stands and
+  turns) and run by time from frame 600, 15 s in all: 0 to 3 s straight in
+  from 0.5 m outside the cards to 0.16 m from the head's centre, inside
+  their shell (cards in front, behind and around, the near plane, 0.1 m,
+  crossing the nearest); 3 to 6 s a full turn on the spot there; 6 to 12 s an orbit inside
+  the shell along the cards' arc, looking ahead along it; 12 to 15 s
+  straight back out; then the scripted camera is released. The camera is
+  logged once a second. Every run follows the same path whatever the frame
+  rate; with `AURORA_FPS_LIMIT=60` a second is 60 frames, so a capture at
+  frame 870 is 4.5 s into the path (inside, mid-turn). Eye and
+  focus are continuous from end to end (no cut at 3, 6 or 12 s); `drift`: the same
   close-up, then a very slow orbit (one fiftieth of a mouse pixel per frame)
-  until frame 1200; press on our own name plate then drag (steering);
+  until frame 1200; `orbit,x,y[,px]`: Alt+click at (x, y) at frame 600,
+  then an orbit of `px` mouse pixels per frame (0.5 by default) that never
+  stops, its pitch swinging slowly, for the stability runs of several
+  minutes with a moving camera; press on our own name plate then drag (steering);
   entering / leaving mouselook (frame 650 shows "Press Esc to return to
   world view" above the bottom bar); `ml-zoom`: the right button held in
   mouselook at 640 (the normal angle stays: no zoom was set with the wheel
