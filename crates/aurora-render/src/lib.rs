@@ -55,6 +55,7 @@ mod renderer;
 mod rlva;
 mod selection;
 pub mod shadow_cull;
+mod shadow_alpha;
 mod shadow_merge;
 #[cfg(test)]
 mod specular_aa;
@@ -117,6 +118,7 @@ pub use hud::HudView;
 pub use label_depth::{world_label_at, world_line_at};
 pub use main_thread::{GpuInfo, Renderer, VulkanLimits};
 pub use renderer::{CASCADES, RenderError};
+pub use shadow_alpha::ShadowAlpha;
 pub use textures::{MASK_CUTOFF, MipLevel, alpha_coverage, build_mips, build_mips_alpha_weighted, preserve_alpha_coverage};
 pub use types::*;
 pub use ui_blur::blurred_backdrop;

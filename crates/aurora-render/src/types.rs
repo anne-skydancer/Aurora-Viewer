@@ -1084,6 +1084,8 @@ pub struct RenderSettings {
     /// Screen-space contact shadows of the sun or the moon (contact_shadows.rs),
     /// with the sun shadows only.
     pub contact_shadows: bool,
+    /// How blended faces cast sun and projector shadows (shadow_alpha.rs).
+    pub shadow_alpha: crate::ShadowAlpha,
     /// Geometric specular anti-aliasing of the objects' highlights
     /// (common.wgsl `specular_aa_roughness`, AURORA_SPECULAR_AA).
     pub specular_aa: bool,
@@ -1121,6 +1123,7 @@ impl Default for RenderSettings {
             screen_indirect: false,
             screen_indirect_intensity: 1.0,
             contact_shadows: false,
+            shadow_alpha: crate::ShadowAlpha::Legacy,
             specular_aa: true,
             water_reflection_scale: 0.25,
             mirror_scale: 0.25,
