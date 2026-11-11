@@ -3301,10 +3301,8 @@ pub(crate) fn toolbar_row(
         let no_pack = b.command == "avatar" && !toolbar.avatar_welcome;
         // the pose stand's, dimmed while we sit (Agent.IsActionAllowed
         // fs_when_not_sitting), its own ground lock included
-        let usable = !(b.command == "photo_roll" && toolbar.photo_roll_empty)
-            && !no_guide
-            && !no_pack
-            && !(b.command == "pose_stand" && row.seated);
+        let usable =
+            !(b.command == "photo_roll" && toolbar.photo_roll_empty) && !no_guide && !no_pack && !(b.command == "pose_stand" && row.seated);
         let tip = if badge {
             aurora_i18n::tr!(
                 "ui-bars-unread",

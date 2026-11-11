@@ -199,13 +199,13 @@ pub mod object_menu;
 /// Boxes for the build tools' snap to objects (AURORA_DEMO_OBJECT_SNAP).
 #[path = "demo_object_snap.rs"]
 pub mod object_snap;
+/// AURORA_DEMO_OIT_COLUMN: a tall translucent textured column of nested tubes.
+#[path = "demo_oit_column.rs"]
+pub mod oit_column;
 /// The Omnifilter's own rules and messages it filters
 /// (AURORA_DEMO_OMNIFILTER).
 #[path = "demo_omnifilter.rs"]
 pub mod omnifilter;
-/// AURORA_DEMO_OIT_COLUMN: a tall translucent textured column of nested tubes.
-#[path = "demo_oit_column.rs"]
-pub mod oit_column;
 /// AURORA_DEMO_OUTFIT_RESTORE: the login restore of the outfit against a
 /// region that puts part of it back by itself.
 #[path = "demo_outfit_restore.rs"]
