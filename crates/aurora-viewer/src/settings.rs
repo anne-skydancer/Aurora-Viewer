@@ -978,6 +978,9 @@ pub struct Settings {
     pub flash_on_object_im: bool,
     /// Flash for a script dialog (FSFlashOnScriptDialog, off).
     pub flash_on_script_dialog: bool,
+    /// How many script dialogs an object keeps open (ScriptDialogLimitations,
+    /// one per channel; `world/script_dialog_limit.rs`).
+    pub script_dialog_limit: crate::world::script_dialog_limit::Limit,
     /// Windows notifications for messages, mentions, offers and alerts
     /// while the window is not in front (FSEnableGrowl, off).
     pub system_notifications: bool,
@@ -1047,6 +1050,12 @@ pub struct Settings {
     /// FSMuteGroupWhenNoticesDisabled: refuse group chat of groups whose
     /// notices are turned off.
     pub mute_groups_without_notices: bool,
+    /// FSGroupNoticesToIMLog: a group notice also writes a line in its
+    /// group's chat, or only its transcript when no chat is open (on).
+    pub group_notices_in_chat: bool,
+    /// FSBetterGroupNoticesToIMLog: that line starts with "Group Notice Sent
+    /// by" and the subject, else it is only the notice's text (on).
+    pub group_notice_subjects_in_chat: bool,
     /// GroupSnoozeTime: how long the snooze of a group chat lasts, in
     /// minutes (15; 0 only closes it until its next message). The Legacy
     /// Viewer counts seconds: a snooze is minutes to hours long (#945).
@@ -1360,6 +1369,11 @@ pub struct Settings {
     /// Always fly after a teleport (the Legacy Viewer's FSFlyAfterTeleport,
     /// off); a region that blocks flying still lands the avatar.
     pub fly_after_teleport: bool,
+    /// The teleport screen offers Cancel even when the simulator says the
+    /// teleport cannot be cancelled (the Legacy Viewer's FSAlwaysShowTPCancel,
+    /// off). RLVa can still take it away; the simulator ignores the cancel of
+    /// a teleport it will not cancel.
+    pub always_show_tp_cancel: bool,
     /// The crouch key stays down until pressed again (FSCrouchToggle, off).
     pub crouch_toggle: bool,
     /// Quickjump: jump and land without waiting for the pre-jump and landing
@@ -1543,6 +1557,10 @@ pub struct Settings {
     /// which an avatar also shows as a silhouette (0 = no limit; ignored
     /// without a complexity limit, as in LL).
     pub max_attachment_area: f32,
+    /// ShowMyComplexityChanges: seconds the notices about our avatar
+    /// complexity, and about the people around who may not see us fully,
+    /// stay (0 = no notices; 10 as in the Legacy Viewer's settings.xml).
+    pub complexity_notice_seconds: u32,
     /// Avatars still loading: 0 particle cloud + progress bar under the name
     /// (Firestorm), 1 progress bar only (drawn as they load), 2 nothing.
     pub loading_avatars: u8,
@@ -2230,6 +2248,7 @@ impl Default for Settings {
             flash_on_message: true,
             flash_on_object_im: true,
             flash_on_script_dialog: false,
+            script_dialog_limit: crate::world::script_dialog_limit::Limit::PerChannel,
             system_notifications: false,
             system_notifications_when_active: false,
             chat_toast_seconds: 20.0,
@@ -2255,6 +2274,8 @@ impl Default for Settings {
             trusted_sites: Default::default(),
             mute_all_groups: false,
             mute_groups_without_notices: false,
+            group_notices_in_chat: true,
+            group_notice_subjects_in_chat: true,
             group_snooze_minutes: 15,
             former_group_snooze_seconds: None,
             group_snooze_ask: false,
@@ -2366,6 +2387,7 @@ impl Default for Settings {
             automatic_fly: true,
             automatic_land: true,
             fly_after_teleport: false,
+            always_show_tp_cancel: false,
             crouch_toggle: false,
             quickjump: false,
             fly_override_warned: false,
@@ -2425,6 +2447,7 @@ impl Default for Settings {
             probe_range: 512.0,
             max_complexity: 350_000,
             max_attachment_area: 1000.0,
+            complexity_notice_seconds: 10,
             loading_avatars: 0,
             complexity_mode: 0,
             avatar_physics: true,
@@ -3058,6 +3081,7 @@ impl Settings {
             1.0
         };
         self.loading_avatars = self.loading_avatars.min(2);
+        self.complexity_notice_seconds = self.complexity_notice_seconds.min(60);
         self.max_attachment_area = if self.max_attachment_area.is_finite() {
             self.max_attachment_area.clamp(0.0, 100_000.0)
         } else {
