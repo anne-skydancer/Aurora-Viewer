@@ -83,6 +83,7 @@ mod gpu_recovery;
 mod gpu_stall;
 mod parcel_music;
 pub(crate) use gpu_stall::withdraw_all as withdraw_gpu_notices;
+mod avatar_align;
 mod debug_settings;
 mod draw_stepping;
 mod graphics_start;
@@ -417,6 +418,9 @@ pub struct App {
     pass_wall_at: Option<Instant>,
     /// The fly override's first-use caution is up (ui::fly_override).
     fly_override_caution: bool,
+    /// A turn of the Compass or Face nearest avatar waits to be sent at
+    /// once (`NetCommand::ForceAgentUpdate`), after this frame's controls.
+    force_agent_update: bool,
     scene: Scene,
     probes: crate::scene::probes::ProbeManager,
     /// Throttle of the "sky frame" log line.
@@ -1566,6 +1570,7 @@ impl App {
             movement_probe: (None, false, None),
             pass_wall_at: None,
             fly_override_caution: false,
+            force_agent_update: false,
             scene,
             probes: Default::default(),
             sky_log: Default::default(),
@@ -10200,6 +10205,10 @@ impl App {
                     });
                 }
             }
+            // a turn made on purpose leaves with the controls just handed over
+            if std::mem::take(&mut self.force_agent_update) {
+                self.net.send(NetCommand::ForceAgentUpdate);
+            }
             // every change of the viewing angle goes to the simulator, as
             // LLViewerCamera::setView (the end of a zoom's easing excepted)
             if (self.camera.fov_y - self.sent_fov).abs() > FOV_SEND_EPSILON {
@@ -14289,6 +14298,7 @@ impl App {
             BarAction::Controls { movement, toggle } => self.request_controls(movement, toggle),
             BarAction::ToggleMoveLock => self.toggle_move_lock(),
             BarAction::ToggleFlyOverride => self.toggle_fly_override(),
+            BarAction::FaceNearestAvatar => self.face_nearest_avatar(),
             BarAction::ToggleQuickjump => {
                 self.settings.quickjump = !self.settings.quickjump;
                 self.settings.save();
@@ -17835,6 +17845,7 @@ impl App {
                 self.avatar_render_settings_window(&ctx, &p);
                 self.bumps_ui.show(&ctx, &p, &self.world, &mut self.panels.bumps);
                 self.grid_status_window(&ctx, &p);
+                self.avatar_align_window(&ctx, &p);
                 if let Some(ui::voice_controls::Action::LeaveCall) = self.voice_controls_ui.show(
                     &ctx,
                     &p,
