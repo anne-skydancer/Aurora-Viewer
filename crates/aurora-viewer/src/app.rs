@@ -572,6 +572,9 @@ pub struct App {
     /// Last walk-key press (for double-tap running) and the active temporary run.
     last_tap: Option<(u8, Instant)>,
     temp_run: Option<u8>,
+    /// `@fly` was held on the previous RLVa update: landing is edge-triggered,
+    /// as RlvUIEnabler::onToggleMovement runs when the behaviour is added.
+    rlva_fly_held: bool,
     /// "Always run" (Ctrl+R).
     always_run: bool,
     /// The Controls window (`ui/controls.rs`), the keys its buttons and
@@ -1704,6 +1707,7 @@ impl App {
             cursor_pos: (0.0, 0.0),
             last_tap: None,
             temp_run: None,
+            rlva_fly_held: false,
             always_run: false,
             controls_ui: Default::default(),
             controls_held: Vec::new(),
@@ -15735,6 +15739,13 @@ impl App {
         let sit_locked = !self.world.rlva_allows_command(&NetCommand::OneShotControl(sit), uuid::Uuid::nil());
         ui.ctx()
             .data_mut(|data| data.insert_temp(ui::bars::rlva_sit_locked_id(), sit_locked));
+        // Agent.enableFlying for the toolbar, enable_fly_land-like for the menu
+        let fly_locked = !crate::autopilot::can_takeoff(&self.world);
+        let fly_menu_locked = !crate::autopilot::fly_or_land_enabled(&self.world);
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(ui::bars::fly_locked_id(), fly_locked);
+            data.insert_temp(ui::bars::fly_menu_locked_id(), fly_menu_locked);
+        });
         self.world.refresh_rlva_privacy();
         self.notif_ui.privacy = self.world.rlva_privacy.clone();
         let mut a = UiActions::default();

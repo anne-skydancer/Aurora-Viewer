@@ -949,7 +949,8 @@ fn main_menus(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, st: &StatusIn
         } else {
             aurora_i18n::tr!("common-fly")
         };
-        if menu::item(ui, p, "plane-tilt-filled", fly) {
+        let fly_locked = ui.ctx().data(|d| d.get_temp::<bool>(fly_menu_locked_id())).unwrap_or(false);
+        if menu::item_if(ui, p, "plane-tilt-filled", fly, !fly_locked) {
             *action = BarAction::ToggleFly;
         }
         // menu_viewer.xml: Fly Override (FSAlwaysFly), beside the flight
@@ -2574,6 +2575,19 @@ pub(crate) fn rlva_sit_locked_id() -> egui::Id {
     egui::Id::unique("rlva-sit-locked")
 }
 
+/// Set by the app every frame: the Fly toolbar button is greyed
+/// (`Agent.enableFlying`: canFly and not sitting).
+pub(crate) fn fly_locked_id() -> egui::Id {
+    egui::Id::unique("fly-locked")
+}
+
+/// Set by the app every frame: the Me menu's Fly / Stop flying item is greyed
+/// (menu_viewer.xml's Fly and Stop flying items together: not flying and
+/// `Agent.enableFlying` false).
+pub(crate) fn fly_menu_locked_id() -> egui::Id {
+    egui::Id::unique("fly-menu-locked")
+}
+
 /// The size of a toolbar button and of its icon: Firestorm's full-width bar
 /// (22 high, the icon follows the width) or the dock of the islands (fixed
 /// buttons, 18 px icons, `bars/dock.rs`); its icon, label or both
@@ -3337,7 +3351,12 @@ pub(crate) fn toolbar_row(
         // the Favorites button: its grid of favourites opens upwards
         let grid_id = egui::Id::unique("bars_favorites_grid_open");
         let active = active || (b.command == "favorites" && ui.ctx().data(|d| d.get_temp::<bool>(grid_id)).unwrap_or(false));
-        let rlva_locked = b.command == "sit" && ui.ctx().data(|d| d.get_temp::<bool>(rlva_sit_locked_id())).unwrap_or(false);
+        let locked_id = match b.command.as_str() {
+            "sit" => Some(rlva_sit_locked_id()),
+            "fly" => Some(fly_locked_id()),
+            _ => None,
+        };
+        let rlva_locked = locked_id.is_some_and(|id| ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(false));
         let response = tool_button(
             ui,
             p,

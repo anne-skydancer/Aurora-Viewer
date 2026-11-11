@@ -219,6 +219,7 @@ impl App {
             me: w.agent_id,
             seated: w.agent.is_sitting(),
             flying: w.agent.flying,
+            fly_blocked: !crate::autopilot::fly_or_land_enabled(w),
             // Account options remain accessible while region support loads.
             hover_height: w.login.is_some(),
             edit_linked: self.settings.build.edit_linked,

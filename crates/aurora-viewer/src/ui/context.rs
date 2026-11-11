@@ -187,6 +187,9 @@ pub struct Facts {
     pub me: Uuid,
     pub seated: bool,
     pub flying: bool,
+    /// Neither flying nor allowed to take off (enable_fly_land): the Fly /
+    /// land entry is greyed.
+    pub fly_blocked: bool,
     /// RLVa would refuse a ground sit (@sit, or @unsit while seated:
     /// RlvActions::canGroundSit), standing up (@unsit: canStand) or sitting
     /// on the clicked object (canSit): those entries are greyed.

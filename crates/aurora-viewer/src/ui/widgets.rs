@@ -2109,6 +2109,11 @@ pub fn icon_toggle(ui: &mut egui::Ui, p: &Palette, icon: &str, tip: &str, on: bo
     small_icon_button(ui, p, icon, tip, true, on)
 }
 
+/// `icon_toggle` that can be greyed out (no click while `enabled` is false).
+pub fn icon_toggle_if(ui: &mut egui::Ui, p: &Palette, icon: &str, tip: &str, on: bool, enabled: bool) -> bool {
+    small_icon_button(ui, p, icon, tip, enabled, on)
+}
+
 /// Flat icon toggle with a larger glyph and hit target, in logical points.
 pub fn icon_toggle_sized(ui: &mut egui::Ui, p: &Palette, icon: &str, tip: &str, on: bool, side: f32) -> bool {
     sized_icon_button(ui, p, icon, tip, true, on, side)
