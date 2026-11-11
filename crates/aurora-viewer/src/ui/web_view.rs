@@ -143,8 +143,6 @@ pub struct WebView {
     /// under way: a command is trusted by the page that sends it, not by the
     /// address that was asked.
     document: Option<String>,
-    /// The sign-in cookie was handed to the running browser.
-    cookie_set: bool,
     /// The folder commands the trusted page sent, for its window to take.
     pub folder_commands: Vec<crate::slapp::FolderCommand>,
 }
