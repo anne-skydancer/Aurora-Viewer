@@ -5771,7 +5771,7 @@ impl Backend {
         let inv_view = f.view.inverse();
         let light_dir = -f.sun_dir.normalize_or(Vec3::Z);
         let mut out = [Mat4::IDENTITY; CASCADES];
-        // the texels each view was translated by (semi-transparent shadows)
+        // the texels each view was translated by (stochastic shadows)
         let mut snaps = [glam::IVec2::ZERO; CASCADES];
         let mut near = f.near;
         for (i, &split) in splits.iter().enumerate() {
@@ -7082,7 +7082,7 @@ impl Backend {
             };
             self.queue.write_buffer(&self.shadow_buffers[i], 0, bytemuck::bytes_of(&u));
         }
-        // semi-transparent shadows: the Aurora caster once it is built (the
+        // stochastic shadows: the Aurora caster once it is built (the
         // frame draws Legacy until then), with the parameters of each map
         let aurora_pipe = if f.shadows && crate::shadow_alpha::mode(self.settings.shadow_alpha) == crate::ShadowAlpha::Aurora {
             self.shadow_alpha

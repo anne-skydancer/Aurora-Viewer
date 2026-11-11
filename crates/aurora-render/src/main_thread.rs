@@ -1875,7 +1875,7 @@ fn open_device(
     if afeat.contains(wgpu::Features::POLYGON_MODE_LINE) {
         features |= wgpu::Features::POLYGON_MODE_LINE;
     }
-    // semi-transparent shadows (shadow_alpha.rs): the triangle in the seed of
+    // stochastic shadows (shadow_alpha.rs): the triangle in the seed of
     // a blended caster's texels
     if afeat.contains(wgpu::Features::PRIMITIVE_INDEX) {
         features |= wgpu::Features::PRIMITIVE_INDEX;

@@ -7,7 +7,7 @@
 //!   0.03, then 0.95; a texture at alpha 0.75 everywhere. As in the Legacy
 //!   Viewer, the shadows are: the frame alone, solid; the frame alone,
 //!   dithered; dithered; none; solid; dithered.
-//! - `alpha`: the semi-transparent shadows (Settings::shadow_alpha, or
+//! - `alpha`: the stochastic shadows (Settings::shadow_alpha, or
 //!   AURORA_SHADOW_ALPHA=legacy|aurora), in a row 2 m panels lying 1.3 m
 //!   above the ground, left to right: blank panes at face alpha 0.2, 0.5 and
 //!   0.8; two 0.5 panes 0.3 m apart, shifted by half a pane (0.5, then 0.25

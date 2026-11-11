@@ -403,7 +403,7 @@ fn a_setting_has_one_page() {
         if path == "keybinds" || path == "colored_sky_ambient" || path == "inventory.confirm_delete" {
             continue;
         }
-        // semi-transparent shadows: Graphics › Shadows, and Aurora with the
+        // stochastic shadows: Graphics › Shadows, and Aurora with the
         // other differences from the Legacy Viewer
         if path == "shadow_alpha" {
             continue;

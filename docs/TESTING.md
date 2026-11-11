@@ -4576,7 +4576,7 @@ both open states and the selection count. Capture at frame 620.
 | `AURORA_DEMO_COPLANAR_DECAL=1`, `mask` or `blend` | Two dirt strips blended over a grass face of the same static mesh, 9 m along the start view (#3059) |
 | `AURORA_DEMO_FOLIAGE=1` | The same cut-out foliage panel at 5, 10, 20, 35 and 60 m along the start view (alpha coverage of the mips) |
 | `AURORA_DEMO_PLANTS=1`, `far` or `dense` | Linden trees and grass: every species near or far along the start view, or a forest |
-| `AURORA_DEMO_BLEND_SHADOWS=1`, `alpha` or `dense` | Alpha-blended panels in the sun (greenhouse pane, face and texture alpha), the semi-transparent shadows' panes, or 400 greenhouse panes |
+| `AURORA_DEMO_BLEND_SHADOWS=1`, `alpha` or `dense` | Alpha-blended panels in the sun (greenhouse pane, face and texture alpha), the stochastic shadows' panes, or 400 greenhouse panes |
 | `AURORA_DEMO_FEET=opaque` or `blend` | A shoe on each foot of our avatar and of the crowd, and two blocks on the ground (contact shadows) |
 | `AURORA_DEMO_LIGHTS=<n>` | Local light load: n small lights in the crowd |
 | `AURORA_DEMO_PROBES=1` | Two manual reflection probes on the plaza: a box and a sphere |
@@ -10553,7 +10553,7 @@ What the inventory must show with these scenarios:
 | `AURORA_SHADOW_FILTER=gaps\|mapped\|before` | Shadow lookup of before (lines along the shadow edges), to compare |
 | `AURORA_SHADOW_BIAS=legacy\|new\|alt` | Shadow receiver bias of before (stairs on avatars' backs), or one second in two |
 | `AURORA_BLEND_SHADOWS=0` | Alpha-blended faces that are not rigged cast no shadow, as before |
-| `AURORA_SHADOW_ALPHA=legacy\|aurora` | Semi-transparent shadows forced to one rule, whatever the setting |
+| `AURORA_SHADOW_ALPHA=legacy\|aurora` | Stochastic shadows forced to one rule, whatever the setting |
 | `AURORA_DEBUG_SHADOWS=1` | Shadow view: the cascade each pixel reads, and its shadow |
 | `AURORA_PROFILE=1` | Profiling in the log (see [Profiling](#profiling)) |
 | `AURORA_FOOT_IK_SCOPE=<mode>` | Offline foot-placement benchmark override (all or visible10) |

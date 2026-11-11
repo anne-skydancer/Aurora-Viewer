@@ -1,4 +1,4 @@
-//! Semi-transparent shadows, Legacy or Aurora.
+//! Stochastic shadows, Legacy or Aurora.
 //!
 //! **Legacy** (the default) is `fs_shadow` of object.wgsl, untouched: a
 //! blended caster casts nothing under 5 % opacity, every other texel column
@@ -152,7 +152,7 @@ impl AuroraCaster {
                 Ok(None) => self.state = State::Failed,
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
-                    log::warn!("semi-transparent shadows: the Aurora caster's worker stopped, Legacy kept");
+                    log::warn!("stochastic shadows: the Aurora caster's worker stopped, Legacy kept");
                     self.state = State::Failed;
                 }
             }
@@ -173,7 +173,7 @@ impl AuroraCaster {
         match spawned {
             Ok(_) => State::Building(rx),
             Err(e) => {
-                log::warn!("semi-transparent shadows: cannot start the worker ({e}), building on this thread");
+                log::warn!("stochastic shadows: cannot start the worker ({e}), building on this thread");
                 match build(device, layouts[0], layouts[1], layouts[2]) {
                     Some(p) => State::Ready(p),
                     None => State::Failed,
@@ -194,7 +194,7 @@ fn build(
     let started = std::time::Instant::now();
     let prim = device.features().contains(wgpu::Features::PRIMITIVE_INDEX);
     if !prim {
-        log::info!("semi-transparent shadows: no PRIMITIVE_INDEX, the seed is the face and its side");
+        log::info!("stochastic shadows: no PRIMITIVE_INDEX, the seed is the face and its side");
     }
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -208,11 +208,11 @@ fn build(
     });
     let pipeline = crate::renderer::shadow_alpha_pipeline(device, &module, &layout);
     if let Some(e) = pollster::block_on(scope.pop()) {
-        log::warn!("semi-transparent shadows: the Aurora caster could not be built, Legacy kept: {e}");
+        log::warn!("stochastic shadows: the Aurora caster could not be built, Legacy kept: {e}");
         return None;
     }
     log::info!(
-        "semi-transparent shadows: the Aurora caster built in {:.0} ms",
+        "stochastic shadows: the Aurora caster built in {:.0} ms",
         started.elapsed().as_secs_f64() * 1000.0
     );
     Some(pipeline)

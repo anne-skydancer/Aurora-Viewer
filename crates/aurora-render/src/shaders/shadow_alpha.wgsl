@@ -1,4 +1,4 @@
-// Semi-transparent shadows, the Aurora rule (shadow_alpha.rs). A second
+// Stochastic shadows, the Aurora rule (shadow_alpha.rs). A second
 // shader module appended to common, object and env: it reads `records`,
 // `portal_clip`, `sample_tex_unbiased`, the FLAG_* constants and the
 // `vs_shadow` / `ShadowOut` of object.wgsl, and replaces `fs_shadow` for the
