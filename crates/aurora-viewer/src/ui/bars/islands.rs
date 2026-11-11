@@ -1184,6 +1184,7 @@ mod tests {
             quiet_snapshots: false,
             marketplace: false,
             destinations: false,
+            avatar_welcome: false,
             parcel_landmark: None,
             can_set_home: false,
             can_go_home: true,
