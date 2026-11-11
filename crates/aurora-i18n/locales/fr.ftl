@@ -5182,6 +5182,11 @@ ui-options-projector-shadow-limit = Projecteurs avec ombres
 ui-options-projector-shadow-limit-help = Nombre maximal d’ombres de projecteurs simultanées (1–16). Une limite plus élevée augmente le temps GPU et la mémoire vidéo utilisée.
 ui-options-contact-shadows = Ombres de contact
 ui-options-contact-shadows-help = Des ombres du soleil nettes là où les choses se touchent (pieds au sol, objets posés, plis), trop fines pour la carte d’ombre. Coûte un peu à la carte graphique
+ui-options-shadow-alpha = Ombres semi-transparentes
+ui-options-shadow-alpha-help = Comment les faces transparentes (verre, cheveux, feuillage) projettent les ombres du soleil et des projecteurs. Legacy : comme le Legacy Viewer, une demi-ombre uniforme, aucune sous 5 % d’opacité, aucune pour les vitres, pleine à partir de 88 %. Aurora : proportionnelle à l’opacité, les couches superposées assombrissent, un verre léger donne une ombre légère ; un grain fin de près sans ombres douces ni TAA
+ui-options-shadow-alpha-legacy = Legacy
+ui-options-shadow-alpha-aurora = Aurora
+ui-options-aurora-shadow-alpha-help = Comment les faces transparentes (verre, cheveux, feuillage) projettent les ombres du soleil et des projecteurs. Legacy : comme le Legacy Viewer, une demi-ombre uniforme, aucune sous 5 % d’opacité, aucune pour les vitres, pleine à partir de 88 %. Aurora : proportionnelle à l’opacité, les couches superposées assombrissent, un verre léger donne une ombre légère ; un grain fin de près sans ombres douces ni TAA. Diffère du Legacy Viewer
 ui-options-when-i-am-away = Quand je suis absent :
 ui-options-when-the-window-is-not-in-the-foreground-the = Quand la fenêtre n'est pas au premier plan, le viewer ralentit pour libérer la machine. Activé par défaut
 ui-options-glow-amount-instead-of-the-image-red-glow-10 = Quantité de glow à la place de l'image (rouge = glow × 10, vert = × 2)

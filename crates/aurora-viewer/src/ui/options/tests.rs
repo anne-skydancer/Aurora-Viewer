@@ -79,6 +79,7 @@ const BEFORE: &[&str] = &[
     "projector_shadows",
     "projector_shadow_limit",
     "contact_shadows",
+    "shadow_alpha",
     "ssao",
     "ao_method",
     "gtao_quality",
@@ -400,6 +401,11 @@ fn a_setting_has_one_page() {
         // differences from the Legacy Viewer;
         // inventory delete confirm: Confirmations and Inventory (#2344)
         if path == "keybinds" || path == "colored_sky_ambient" || path == "inventory.confirm_delete" {
+            continue;
+        }
+        // semi-transparent shadows: Graphics › Shadows, and Aurora with the
+        // other differences from the Legacy Viewer
+        if path == "shadow_alpha" {
             continue;
         }
         let elsewhere: Vec<_> = paths

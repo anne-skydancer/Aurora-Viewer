@@ -12,6 +12,19 @@ pub mod registry;
 mod saver;
 pub mod stream_list;
 
+/// How blended faces (glass, hair, leaves) cast sun and projector shadows
+/// (aurora_render `shadow_alpha`): the Legacy Viewer's rule, or Aurora's, in
+/// proportion to the opacity.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ShadowAlpha {
+    /// The Legacy Viewer's rule (the default).
+    #[default]
+    Legacy,
+    /// In proportion to the opacity; layers add up.
+    Aurora,
+}
+
 /// Where a contact-set marker stands on an avatar (`ui/contact_markers.rs`).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MarkerAnchor {
@@ -1374,6 +1387,10 @@ pub struct Settings {
     /// Legacy Viewer (contact_shadows.rs): what the shadow map is too coarse
     /// to show, where things touch. Off by default; only with the shadows.
     pub contact_shadows: bool,
+    /// How blended faces cast shadows: the Legacy Viewer's rule or Aurora's,
+    /// beyond the Legacy Viewer (aurora_render `shadow_alpha`). Legacy by
+    /// default; an experimental setting.
+    pub shadow_alpha: ShadowAlpha,
     /// 0 none, 1 FXAA, 2 MSAA 2x, 3 MSAA 4x, 4 MSAA 8x, 5 TAA, 6 SMAA (the
     /// default, RenderFSAAType 2 of Firestorm's High to Ultra levels in
     /// featuretable.txt), 7 AMD FSR 3.1 (beyond the Legacy Viewer)
@@ -2308,6 +2325,7 @@ impl Default for Settings {
             others_attached_lights: true,
             projector_shadow_limit: 2,
             contact_shadows: false,
+            shadow_alpha: ShadowAlpha::Legacy,
             antialiasing: 6,
             fsr_quality: 1,
             fsr_sharpness: 80,
@@ -3339,6 +3357,10 @@ impl Settings {
             screen_indirect: self.ao_method == 1 && self.screen_indirect_light,
             screen_indirect_intensity: self.screen_indirect_intensity,
             contact_shadows: self.contact_shadows,
+            shadow_alpha: match self.shadow_alpha {
+                ShadowAlpha::Legacy => aurora_render::ShadowAlpha::Legacy,
+                ShadowAlpha::Aurora => aurora_render::ShadowAlpha::Aurora,
+            },
             specular_aa: self.specular_aa,
             water_reflection_scale: Self::reflection_scale(self.water_reflections),
             mirror_scale: Self::reflection_scale(self.mirrors),

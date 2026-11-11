@@ -5,6 +5,7 @@
 
 use super::super::cx::{Custom, Cx, Nothing, field};
 use super::super::{COMBO_W, preset_choice, stepped, toggle};
+use crate::settings::ShadowAlpha;
 use egui::RichText;
 
 pub fn page(cx: &mut Cx, tab: usize) {
@@ -656,6 +657,16 @@ fn light(cx: &mut Cx) {
                 tr!("ui-options-contact-shadows"),
                 tr!("ui-options-contact-shadows-help"),
                 &field!(contact_shadows),
+            );
+            // an Aurora difference, also listed in Preferences › Aurora
+            cx.wide().experimental().choice(
+                tr!("ui-options-shadow-alpha"),
+                tr!("ui-options-shadow-alpha-help"),
+                &field!(shadow_alpha),
+                &[
+                    (ShadowAlpha::Legacy, tr!("ui-options-shadow-alpha-legacy"), false),
+                    (ShadowAlpha::Aurora, tr!("ui-options-shadow-alpha-aurora"), true),
+                ],
             );
         });
     });
