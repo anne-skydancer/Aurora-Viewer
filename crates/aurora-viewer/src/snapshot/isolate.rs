@@ -49,6 +49,10 @@ pub struct Isolation {
     /// Bumped when what is drawn changes: the scene flags every object
     /// again.
     pub version: u64,
+    /// Every avatar left out, with what it wears, whatever the mode (the
+    /// 360° snapshot's "Hide all avatars", LLFloater360Capture's
+    /// RENDER_TYPE_AVATAR toggle).
+    pub hide_avatars: bool,
 }
 
 impl Default for Isolation {
@@ -61,6 +65,7 @@ impl Default for Isolation {
             picking: false,
             open: false,
             version: 0,
+            hide_avatars: false,
         }
     }
 }
@@ -69,6 +74,19 @@ impl Isolation {
     /// The choice decides what is drawn now.
     pub fn applied(&self) -> bool {
         self.open && !self.picking && self.mode != Mode::Off
+    }
+
+    /// Something is left out now: the choice, or every avatar.
+    pub fn hides(&self) -> bool {
+        self.applied() || self.hide_avatars
+    }
+
+    /// Every avatar left out (the 360° snapshot's capture), or back.
+    pub fn set_hide_avatars(&mut self, on: bool) {
+        if self.hide_avatars != on {
+            self.hide_avatars = on;
+            self.bump();
+        }
     }
 
     /// The background is left empty now (and the photo keeps its alpha).
@@ -211,14 +229,21 @@ pub fn root_of(world: &crate::world::World, index: usize) -> Option<(usize, Uuid
     None
 }
 
-/// Whether the object at `index` is drawn under the photo's isolation.
+/// Whether the object at `index` is drawn under the photo's isolation, or
+/// with every avatar hidden (an avatar and what it wears go together).
 pub fn object_visible(world: &crate::world::World, index: usize) -> bool {
     let iso = &world.photo_isolation;
-    !iso.applied()
-        || root_of(world, index).is_none_or(|(at, root)| {
-            let avatar = world.objects.get(at).is_some_and(|o| o.is_avatar());
-            iso.root_visible(&root, avatar)
-        })
+    if !iso.hides() {
+        return true;
+    }
+    let Some((root_index, root)) = root_of(world, index) else {
+        return true;
+    };
+    let avatar = world.objects.get(root_index).is_some_and(|o| o.is_avatar());
+    if iso.hide_avatars && avatar {
+        return false;
+    }
+    iso.root_visible(&root, avatar)
 }
 
 #[cfg(test)]

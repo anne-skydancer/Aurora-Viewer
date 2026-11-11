@@ -13968,6 +13968,19 @@ wearable-favorites-delete-unloaded =
 wearable-favorites-invalid-name =
     お気に入りの着用物のフォルダ「{ $name }」を作成できませんでした。
     フォルダ名に「/」または「\」を含めることはできません。
+# ３６０度スナップショットのウィンドウ（LLFloater360Capture, floater_360capture.xml）
+capture-360-quality-preview = プレビュー（高速）
+capture-360-quality-medium = 通常
+capture-360-quality-high = 高
+capture-360-quality-maximum = 最高品位
+capture-360-hide-avatars = アバターをすべて隠す
+capture-360-capturing = ６面中{ $face }面目を描画中…
+capture-360-projecting = ３６０度画像を作成中…
+capture-360-saving = ３６０度画像を保存中…
+capture-360-saved = { $name }を保存しました
+capture-360-failed = ３６０度画像を作成できませんでした。
+capture-360-save-failed = ３６０度画像を保存できませんでした：{ $error }
+capture-360-save-dialog = ３６０度画像を保存
 
 # Parcel radio state and stream failures
 music-state-error = 再生できません：{ $reason }
@@ -14047,3 +14060,21 @@ ui-options-attached-particles-hint = アバターが装着しているものの�
 # Preferences › Graphics: progressive draw distance (FSRenderFarClipStepping)
 ui-options-draw-distance-stepping = 描画距離を段階的に広げる
 ui-options-draw-distance-stepping-hint = ログイン後と別のリージョンへのテレポート後、描画距離を32mから始めて設定値まで倍々に広げ、近くのものから読み込みます。
+
+# Panorama viewer (ui/panorama.rs)
+panorama-reset = 表示をリセット
+panorama-enlarge = 拡大
+panorama-leave-full = 拡大表示を終了
+panorama-help = ドラッグで見回し、ホイールでズーム、ダブルクリックでリセット。クリックしてから、矢印キーで見回し、+ / - でズームします。
+
+# Texture preview: look into a 2:1 texture as a panorama
+resource-preview-360 = ３６０°
+
+# Photo window: the 360° format
+photo-format-360 = ３６０°
+photo-not-in-360 = ３６０°画像では使えません。
+photo-360-inventory-size = パノラマ：{ $width } × { $height }（最大のテクスチャ）
+photo-360-output = パノラマ：{ $width } × { $height }
+photo-360-format = JPEG · ３６０°
+photo-360-placeholder = シャッターを押すと、ここにパノラマが表示されます。
+photo-looks-not-in-360 = ３６０°画像には適用されません。色調フィルターのみ適用されます。
