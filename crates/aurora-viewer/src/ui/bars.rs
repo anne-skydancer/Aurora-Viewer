@@ -3224,11 +3224,15 @@ pub(crate) fn toolbar_row(
         // the Photo roll's button, dimmed while the session has no photo
         // and the Destination Guide's on a grid without one (GridFeatureCheck)
         let no_guide = b.command == "destinations" && !toolbar.destinations;
+<<<<<<< HEAD
         // the pose stand's, dimmed while we sit (Agent.IsActionAllowed
         // fs_when_not_sitting), its own ground lock included
         let usable = !(b.command == "photo_roll" && toolbar.photo_roll_empty)
             && !no_guide
             && !(b.command == "pose_stand" && row.seated);
+=======
+        let usable = !(b.command == "photo_roll" && toolbar.photo_roll_empty) && !no_guide;
+>>>>>>> feat/toolbar-web-guides
         let tip = if badge {
             aurora_i18n::tr!(
                 "ui-bars-unread",
