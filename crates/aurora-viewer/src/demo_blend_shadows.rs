@@ -31,8 +31,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 const FIRST_ID: u32 = 86_000;
-/// Opaque frame bars around four panes at alpha 128.
-const TEX_GREENHOUSE: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0000_0040);
+/// Opaque frame bars around four panes at alpha 128. (Not ..._0040: the HUD
+/// demo's mask panel took that id, and `local_texture` serves it first, so
+/// the pane showed that texture and cast a solid shadow.)
+const TEX_GREENHOUSE: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0000_0042);
 /// Alpha 192 (0.75) everywhere: over the 0.598 cutoff, under 0.88.
 const TEX_ALPHA_75: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0000_0041);
 
