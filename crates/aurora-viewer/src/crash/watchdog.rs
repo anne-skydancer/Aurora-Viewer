@@ -33,6 +33,13 @@ const RECAPTURE: Duration = Duration::from_secs(15);
 pub const HUNG_AFTER: u64 = 5;
 /// The threads whose stacks a freeze report shows, after the main one.
 const THREADS: &[&str] = &["aurora-render"];
+/// A tick that took this much longer than [`TICK`] means the whole process
+/// stood still (the computer slept, a debugger held it; on Windows the
+/// clock counts the sleep): the window's answer is not judged for
+/// [`HUNG_AFTER`] after it, the time Windows' own test needs to see the
+/// main thread take messages again.
+#[cfg(any(windows, target_os = "linux"))]
+const PAUSE: Duration = Duration::from_secs(5);
 
 static WINDOW: AtomicUsize = AtomicUsize::new(0);
 /// Linux: the main loop's last pass, in milliseconds since [`EPOCH`].
@@ -41,6 +48,12 @@ static PUMPED: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "linux")]
 static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 static STATE: Mutex<Option<State>> = Mutex::new(None);
+/// A pause of the main thread announced in advance (`expect_pause`), in
+/// milliseconds since the watchdog started: no freeze until then.
+#[cfg(any(windows, target_os = "linux"))]
+static PAUSE_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(any(windows, target_os = "linux"))]
+static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 /// What the viewer was doing, noted by the app every few seconds. Only
 /// numbers and names fixed in the code: the report publishes it.
@@ -266,6 +279,24 @@ fn window_hung(_window: usize) -> bool {
     since_epoch().saturating_sub(PUMPED.load(Ordering::Relaxed)) >= HUNG_AFTER * 1000
 }
 
+/// The main thread stops on purpose for `duration` from now (the demo's
+/// stand-in for the computer's sleep): not a freeze.
+pub fn expect_pause(duration: Duration) {
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        let until = STARTED.get_or_init(Instant::now).elapsed() + duration + Duration::from_secs(HUNG_AFTER);
+        PAUSE_UNTIL.store(until.as_millis() as u64, Ordering::Relaxed);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let _ = duration;
+}
+
+/// Whether a pause announced by `expect_pause` still covers now.
+#[cfg(any(windows, target_os = "linux"))]
+fn pause_expected() -> bool {
+    STARTED.get_or_init(Instant::now).elapsed().as_millis() as u64 <= PAUSE_UNTIL.load(Ordering::Relaxed)
+}
+
 /// Started from the main thread, whose handle it keeps.
 pub fn start(dir: &Path) {
     #[cfg(any(windows, target_os = "linux"))]
@@ -293,10 +324,27 @@ fn run(dir: &Path, main: Option<&super::native::Thread>) {
     let mut captured: Option<Instant> = None;
     let mut responsive: Option<u64> = None;
     let mut written: Option<Instant> = None;
+    // after a pause of the whole process, no verdict until then
+    let mut paused_until: Option<Instant> = None;
     loop {
+        let before = Instant::now();
         std::thread::sleep(TICK);
+        if before.elapsed() >= TICK + PAUSE {
+            log::info!(
+                "the whole viewer stood still for about {} s (the computer asleep, or held): not a freeze",
+                before.elapsed().as_secs()
+            );
+            paused_until = Some(Instant::now() + Duration::from_secs(HUNG_AFTER));
+            // a freeze seen just before the pause was the pause beginning
+            if hung_since.take().is_some() {
+                captured = None;
+                let _ = std::fs::remove_file(dir.join("freeze.txt"));
+            }
+        }
         let window = WINDOW.load(Ordering::Relaxed);
-        if window != 0 {
+        let judging = paused_until.is_none_or(|until| Instant::now() >= until) && !pause_expected();
+        if window != 0 && judging {
+            paused_until = None;
             if window_hung(window) {
                 let since = *hung_since.get_or_insert_with(Instant::now);
                 if captured.is_none_or(|at| at.elapsed() >= RECAPTURE) {
