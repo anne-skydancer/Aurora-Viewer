@@ -5629,6 +5629,7 @@ impl Backend {
                     il,
                     false,
                     true,
+                    soft,
                 )
             }),
             b: mk(
