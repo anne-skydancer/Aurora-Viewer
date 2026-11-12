@@ -351,6 +351,7 @@ mod tests {
             far: FarStep::new(Instant::now()),
             refuse_neighbours: false,
             fov: DEFAULT_FOV,
+            interest_list: crate::InterestListMode::Default,
             logout_started: None,
             finished: false,
             agent_moved: false,
