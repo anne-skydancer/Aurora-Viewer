@@ -13,6 +13,7 @@ mod currency;
 mod estate;
 mod experience_events;
 mod gestures;
+mod god;
 mod inventory_copies;
 mod inventory_moves;
 mod inventory_preview;
@@ -21,6 +22,7 @@ mod inventory_updates;
 mod inventory_upload;
 mod object_actions;
 mod object_cache;
+mod render_info_net;
 mod scripts;
 mod sim_requests;
 mod slm_net;
@@ -221,6 +223,8 @@ impl Drop for Sim {
 
 pub(crate) struct Shared {
     pub http: reqwest::Client,
+    /// `http` with the login's own HTTP redirects (`login::redirect_policy`).
+    pub login_http: reqwest::Client,
     pub caps_http: reqwest::Client,
     pub events: crate::EventSender,
     pub controls: Arc<Mutex<AgentControls>>,
@@ -234,6 +238,8 @@ pub(crate) struct Shared {
     pub viewer_stats: Arc<Mutex<crate::viewer_stats::ViewerSide>>,
     /// Reports being posted (`NetClient::wait_viewer_stats`).
     pub viewer_stats_posts: Arc<crate::viewer_stats::PostsInFlight>,
+    /// The avatars the viewer sees (`NetClient::set_seen_avatars`).
+    pub seen_avatars: Arc<Mutex<Vec<crate::render_info::SeenAvatar>>>,
 }
 
 /// How long one appearance request may hold the queue.
@@ -288,6 +294,7 @@ struct Session<'a> {
     login: Arc<LoginResponse>,
     sims: HashMap<SocketAddr, Sim>,
     main: Option<SocketAddr>,
+    last_run_sent: Option<(SocketAddr, bool)>,
     eq_tx: mpsc::UnboundedSender<EqMessage>,
     caps_tx: CapsSender,
     notecard_copy_tx: mpsc::UnboundedSender<(u32, Result<(), String>)>,
@@ -322,6 +329,9 @@ struct Session<'a> {
     /// When Linden Lab's viewer statistics leave (viewer_stats.rs), and the
     /// regions the agent arrived in (LLAgent::mRegionsVisited).
     viewer_stats: crate::viewer_stats::Schedule,
+    /// When each region is told about the avatars we see and asked about
+    /// ours (render_info.rs).
+    render_info: crate::render_info::Schedule,
     regions_visited: std::collections::HashSet<u64>,
     cam_requested_at: Option<Instant>,
     /// The first arrival of this session is still awaited (STATE_AGENT_WAIT).
@@ -430,7 +440,7 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
             fraction: 0.1,
         },
     );
-    let login = match login::login(&sh.http, &req).await {
+    let login = match login::login(&sh.login_http, &req).await {
         Ok(l) => Arc::new(l),
         Err(e) => {
             let (mfa, tos) = (matches!(e, LoginError::MfaRequired(_)), matches!(e, LoginError::TosRequired(_)));
@@ -456,6 +466,10 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
                     critical_required: critical,
                     bad_credentials,
                     previous_session,
+                    next_server: match e {
+                        LoginError::NextServer(server) => Some(server),
+                        _ => None,
+                    },
                 },
             );
             return;
@@ -485,6 +499,7 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
                     critical_required: false,
                     bad_credentials: false,
                     previous_session: false,
+                    next_server: None,
                 },
             );
             return;
@@ -506,6 +521,7 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
         login: login.clone(),
         sims: HashMap::new(),
         main: None,
+        last_run_sent: None,
         eq_tx,
         caps_tx,
         agent_update: AgentUpdateRule::new(Instant::now()),
@@ -519,6 +535,7 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
         finished: false,
         agent_moved: false,
         viewer_stats: Default::default(),
+        render_info: crate::render_info::Schedule::new(Instant::now()),
         regions_visited: Default::default(),
         cam_requested_at: None,
         login_arrival: true,
@@ -789,6 +806,7 @@ impl Session<'_> {
     }
 
     fn send_complete_agent_movement(&mut self, addr: SocketAddr) {
+        self.last_run_sent = None;
         transition::step(|| format!("CompleteAgentMovement sent to region {}", transition::grid(self.handle_of(addr))));
         let mut m = CompleteAgentMovement::default();
         m.agent_data.agent_id = self.agent_id();
@@ -988,6 +1006,8 @@ impl Session<'_> {
         let caps = Arc::new(caps);
         sim.caps = caps.clone();
         emit(self.sh, NetEvent::Capabilities { handle: sim.handle, caps });
+        // LLAvatarRenderInfoAccountant::scanNewRegion (setCapabilitiesReceived)
+        self.render_info.new_region(sim.handle, Instant::now());
         let features = sim.caps.get("SimulatorFeatures").cloned().map(|u| (sim.handle, u));
         let terrain_handle = sim.handshake_seen.then_some(sim.handle);
         if let Some(handle) = terrain_handle {
@@ -1347,6 +1367,9 @@ impl Session<'_> {
     fn tick(&mut self) {
         if self.logout_started.is_none() && self.viewer_stats.due(Instant::now(), self.agent_moved) {
             self.send_viewer_stats();
+        }
+        if self.logout_started.is_none() {
+            self.scan_render_info(Instant::now());
         }
         self.expire_task_inventory();
         self.expire_script_transfers();
@@ -1712,6 +1735,15 @@ impl Session<'_> {
                     || "TeleportLandmarkRequest (home) sent".to_string(),
                     &self.sh.stats,
                 );
+            }
+            NetCommand::TeleportCancel => {
+                // LLAgent::teleportCancel: reliable, to the region we leave
+                log::info!("Sending TeleportCancel");
+                let mut m = TeleportCancel::default();
+                m.info.agent_id = self.agent_id();
+                m.info.session_id = self.session_id();
+                self.send_main(&m, true);
+                transition::end(Some(transition::Kind::Teleport), "cancelled (TeleportCancel sent)", &self.sh.stats);
             }
             NetCommand::CancelRegionRestart => {
                 // LLPanelRegionInfo::sendEstateOwnerMessage("restart", {"-1"}),
@@ -2134,6 +2166,8 @@ impl Session<'_> {
             }
             NetCommand::Land(l) => self.on_land_command(l),
             NetCommand::Estate(e) => self.on_estate_command(e),
+            NetCommand::RequestGodlikePowers { godlike } => self.request_godlike(godlike),
+            NetCommand::God(c) => self.on_god_command(c),
             NetCommand::ParcelInfoRequest(id) => {
                 let mut m = ParcelInfoRequest::default();
                 m.agent_data.agent_id = self.agent_id();
@@ -2202,6 +2236,11 @@ impl Session<'_> {
                 self.send_main(&m, false);
             }
             NetCommand::SetAlwaysRun(run) => {
+                let Some(region) = self.main else { return };
+                if !self.sims.contains_key(&region) || self.last_run_sent == Some((region, run)) {
+                    return;
+                }
+                self.last_run_sent = Some((region, run));
                 let mut m = SetAlwaysRun::default();
                 m.agent_data.agent_id = self.agent_id();
                 m.agent_data.session_id = self.session_id();
@@ -2794,6 +2833,13 @@ impl Session<'_> {
             } => {
                 self.create_notecard_item(request, parent, name, data, permissions);
             }
+            NetCommand::CreateScriptItem {
+                request,
+                parent,
+                name,
+                description,
+                source,
+            } => self.create_script_item(request, parent, name, description, source),
             NetCommand::CreateInventoryItem {
                 parent,
                 kind,
@@ -3033,6 +3079,7 @@ impl Session<'_> {
             | NetCommand::AgentAnimationChanges { .. }
             | NetCommand::AnimationStateReset
             | NetCommand::RevokePermissions { .. }
+            | NetCommand::ForceScriptControlRelease
             | NetCommand::ObjectGrab { .. }
             | NetCommand::ObjectGrabUpdate { .. }
             | NetCommand::ObjectRelease { .. }
@@ -4094,6 +4141,7 @@ impl Session<'_> {
             || self.dispatch_search(from, pkt)?
             || self.dispatch_groups(pkt)?
             || self.dispatch_build(pkt)?
+            || self.dispatch_god(pkt)?
         {
             return Ok(());
         }
@@ -5032,6 +5080,7 @@ impl Session<'_> {
             if let Some(parameter) = m.param_list.first() {
                 self.on_inventory_generic(m.agent_data.agent_id, &m.method_data.method, &parameter.parameter);
             }
+            self.on_social_generic(m.agent_data.agent_id, &m.method_data.method);
         } else if id == LargeGenericMessage::ID {
             let m: LargeGenericMessage = pkt.decode()?;
             self.on_experience_generic(
@@ -5047,6 +5096,7 @@ impl Session<'_> {
             if let Some(parameter) = m.param_list.first() {
                 self.on_inventory_generic(m.agent_data.agent_id, &m.method_data.method, &parameter.parameter);
             }
+            self.on_social_generic(m.agent_data.agent_id, &m.method_data.method);
         } else if id == UpdateCreateInventoryItem::ID {
             let m: UpdateCreateInventoryItem = pkt.decode()?;
             if m.agent_data.agent_id == self.agent_id() {
@@ -5225,6 +5275,7 @@ impl Session<'_> {
                 },
             );
         } else if id == TeleportStart::ID {
+            let m: TeleportStart = pkt.decode()?;
             if transition::current() == Some(transition::Kind::Teleport) {
                 transition::step(|| "TeleportStart".to_string());
             } else {
@@ -5234,7 +5285,12 @@ impl Session<'_> {
                     &self.sh.stats,
                 );
             }
-            emit(self.sh, NetEvent::TeleportStarted);
+            emit(
+                self.sh,
+                NetEvent::TeleportStarted {
+                    flags: m.info.teleport_flags,
+                },
+            );
         } else if id == TeleportProgress::ID {
             let m: TeleportProgress = pkt.decode()?;
             transition::step(|| format!("TeleportProgress '{}'", field_str(&m.info.message)));
@@ -5242,6 +5298,7 @@ impl Session<'_> {
                 self.sh,
                 NetEvent::TeleportProgress {
                     message: field_str(&m.info.message),
+                    flags: m.info.teleport_flags,
                 },
             );
         } else if id == TeleportFailed::ID {
@@ -6209,6 +6266,33 @@ mod event_queue_tests {
     }
 
     #[tokio::test]
+    async fn run_updates_only_send_on_changes_and_resync_after_region_arrival() {
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("viewer socket"));
+        sock.writable().await.expect("writable UDP socket");
+        let main = UdpSocket::bind("127.0.0.1:0").await.expect("main simulator");
+        let neighbour = UdpSocket::bind("127.0.0.1:0").await.expect("neighbour simulator");
+        let main_addr = main.local_addr().unwrap();
+        let neighbour_addr = neighbour.local_addr().unwrap();
+        let (events, _received) = crossbeam_channel::unbounded();
+        let sh = shared(crate::EventSender(events));
+        let mut session = two_regions(&sh, sock, main_addr, neighbour_addr);
+        let packets = || sh.stats.packets_out.load(std::sync::atomic::Ordering::Relaxed);
+        let initial = packets();
+        session.on_command(NetCommand::SetAlwaysRun(false));
+        session.on_command(NetCommand::SetAlwaysRun(false));
+        session.on_command(NetCommand::SetAlwaysRun(true));
+        session.on_command(NetCommand::SetAlwaysRun(true));
+        assert_eq!(packets() - initial, 2);
+        session.main = Some(neighbour_addr);
+        session.on_command(NetCommand::SetAlwaysRun(true));
+        assert_eq!(packets() - initial, 3);
+        session.send_complete_agent_movement(neighbour_addr);
+        let before = packets();
+        session.on_command(NetCommand::SetAlwaysRun(true));
+        assert_eq!(packets() - before, 1, "arrival resynchronizes unchanged run preference");
+    }
+
+    #[tokio::test]
     async fn remote_teleport_flags_reach_the_viewer_and_old_circuits_cannot_replace_own_animations() {
         let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("viewer socket"));
         let main: SocketAddr = "127.0.0.1:13001".parse().unwrap();
@@ -6281,6 +6365,7 @@ mod event_queue_tests {
     pub(super) fn shared(events: crate::EventSender) -> Shared {
         Shared {
             http: reqwest::Client::new(),
+            login_http: reqwest::Client::new(),
             caps_http: reqwest::Client::new(),
             events,
             controls: Arc::new(Mutex::new(AgentControls::default())),
@@ -6290,6 +6375,7 @@ mod event_queue_tests {
             bandwidth_kbps: Default::default(),
             viewer_stats: Default::default(),
             viewer_stats_posts: Default::default(),
+            seen_avatars: Default::default(),
         }
     }
 
@@ -6327,6 +6413,7 @@ mod event_queue_tests {
             login,
             sims: [(main_addr, Sim::new(main_addr, 10)), (neighbour_addr, Sim::new(neighbour_addr, 20))].into(),
             main: Some(main_addr),
+            last_run_sent: None,
             eq_tx,
             caps_tx,
             notecard_copy_tx,
@@ -6347,6 +6434,7 @@ mod event_queue_tests {
             finished: false,
             agent_moved: false,
             viewer_stats: Default::default(),
+            render_info: crate::render_info::Schedule::new(Instant::now()),
             regions_visited: Default::default(),
             cam_requested_at: None,
             login_arrival: false,
@@ -6620,9 +6708,10 @@ mod event_queue_tests {
 mod script_dialog_tests {
     use super::*;
 
-    fn test_shared(events: crossbeam_channel::Sender<(Instant, NetEvent)>) -> Shared {
+    pub(in crate::session) fn test_shared(events: crossbeam_channel::Sender<(Instant, NetEvent)>) -> Shared {
         Shared {
             http: reqwest::Client::new(),
+            login_http: reqwest::Client::new(),
             caps_http: reqwest::Client::new(),
             events: crate::EventSender(events),
             controls: Arc::new(Mutex::new(AgentControls::default())),
@@ -6632,10 +6721,11 @@ mod script_dialog_tests {
             bandwidth_kbps: Default::default(),
             viewer_stats: Default::default(),
             viewer_stats_posts: Default::default(),
+            seen_avatars: Default::default(),
         }
     }
 
-    fn test_login(main_port: u16) -> Arc<LoginResponse> {
+    pub(in crate::session) fn test_login(main_port: u16) -> Arc<LoginResponse> {
         Arc::new(LoginResponse {
             agent_id: Uuid::from_u128(1),
             session_id: Uuid::from_u128(2),
@@ -6659,7 +6749,12 @@ mod script_dialog_tests {
         })
     }
 
-    fn test_session<'a>(sh: &'a Shared, sock: Arc<UdpSocket>, sims: HashMap<SocketAddr, Sim>, main: SocketAddr) -> Session<'a> {
+    pub(in crate::session) fn test_session<'a>(
+        sh: &'a Shared,
+        sock: Arc<UdpSocket>,
+        sims: HashMap<SocketAddr, Sim>,
+        main: SocketAddr,
+    ) -> Session<'a> {
         let (eq_tx, _) = mpsc::unbounded_channel();
         let (caps_tx, _) = mpsc::unbounded_channel();
         let (notecard_copy_tx, _) = mpsc::unbounded_channel();
@@ -6671,6 +6766,7 @@ mod script_dialog_tests {
             login: test_login(main.port()),
             sims,
             main: Some(main),
+            last_run_sent: None,
             eq_tx,
             caps_tx,
             notecard_copy_tx,
@@ -6691,6 +6787,7 @@ mod script_dialog_tests {
             finished: false,
             agent_moved: false,
             viewer_stats: Default::default(),
+            render_info: crate::render_info::Schedule::new(Instant::now()),
             regions_visited: Default::default(),
             cam_requested_at: None,
             login_arrival: false,
@@ -7212,5 +7309,24 @@ mod script_dialog_tests {
             assert_eq!(parts.join(" "), words);
             assert!(main.try_recv_from(&mut large).is_err(), "three parts only");
         }
+    }
+
+    /// The next packets the region receives, decoded as `M`, past the
+    /// others (pings, agent updates) until `n` of them arrived.
+    pub(in crate::session) async fn received<M: Msg>(sim: &UdpSocket, n: usize) -> Vec<M> {
+        let mut datagram = [0; 1500];
+        let mut out = Vec::new();
+        while out.len() < n {
+            let (size, _) = tokio::time::timeout(Duration::from_secs(2), sim.recv_from(&mut datagram))
+                .await
+                .expect("the packet reaches the region")
+                .expect("packet");
+            let packet = parse_packet(&datagram[..size]).expect("datagram");
+            if packet.id == M::ID {
+                assert!(packet.reliable());
+                out.push(packet.decode().expect("message"));
+            }
+        }
+        out
     }
 }
