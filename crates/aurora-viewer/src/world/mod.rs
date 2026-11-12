@@ -17,6 +17,7 @@ pub mod bridge;
 pub mod calls;
 pub mod chat_log;
 pub mod collisions;
+pub mod complexity_notice;
 pub mod contact_markers;
 pub mod contact_sets;
 pub mod derender;
@@ -616,6 +617,8 @@ pub struct World {
     /// The photo's isolation (`snapshot::isolate`): read with the parcel
     /// filter by `parcel_object_visibility`.
     pub photo_isolation: crate::snapshot::isolate::Isolation,
+    /// Local dressing-room visibility; independent of photo choices.
+    pub avatar_studio: bool,
     /// About Land: the selected parcel, covenant, group / experience names.
     pub land: land::Land,
     /// The Region / Estate window's region and estate.
@@ -952,6 +955,7 @@ impl World {
             parcel_name: String::new(),
             parcel_visibility: Default::default(),
             photo_isolation: Default::default(),
+            avatar_studio: false,
             parcel: None,
             land: land::Land::default(),
             estate: estate::Estate::default(),
@@ -4809,10 +4813,8 @@ impl World {
     fn push_group_notice(&mut self, im: &InstantMessage, from: &str) {
         use notifications::{Data, Kind, NameTarget, NoticeAttachment};
         // "subject|message"
-        let (subject, body) = im
-            .message
-            .split_once('|')
-            .unwrap_or((aurora_i18n::tr!("common-group-notice"), im.message.as_str()));
+        let parts = im.message.split_once('|');
+        let (subject, body) = parts.unwrap_or((aurora_i18n::tr!("common-group-notice"), im.message.as_str()));
         let bucket = aurora_net::groups::notice_bucket(&im.binary_bucket);
         if bucket.is_none() {
             log::warn!("group notice: malformed binary bucket");
@@ -4841,6 +4843,11 @@ impl World {
             },
             _ => Data::None,
         };
+        // its line in the group's chat (FSGroupNoticesToIMLog), kept when
+        // the card is closed
+        if let Some(group) = group {
+            self.group_notice_to_chat(group, from, parts.map_or("", |p| p.0), body);
+        }
         let id = self.notifications.push(Kind::Group, title, text, data);
         if let (Some(group), Some(name)) = (group, group_name) {
             self.notifications.link_name(id, name, NameTarget::Group(group));
