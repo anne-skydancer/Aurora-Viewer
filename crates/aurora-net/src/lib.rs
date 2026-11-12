@@ -362,6 +362,15 @@ impl NetClient {
         let _ = self.cmd_tx.send(cmd);
     }
 
+    /// A handle that asks the session for its logout from any thread (the
+    /// computer going to sleep, power.rs of the viewer).
+    pub fn logout_handle(&self) -> LogoutHandle {
+        LogoutHandle {
+            cmd_tx: self.cmd_tx.clone(),
+            stats: self.stats.clone(),
+        }
+    }
+
     pub fn runtime(&self) -> &tokio::runtime::Handle {
         self.rt.handle()
     }
@@ -369,6 +378,65 @@ impl NetClient {
     /// HTTP client for capabilities (voice provisioning uses it too).
     pub fn caps_http(&self) -> reqwest::Client {
         self.caps_http.clone()
+    }
+}
+
+/// The session's logout, asked from outside the main thread: the same
+/// `NetCommand::Logout` as the user's (LLAppViewer::requestQuit: the last
+/// viewer statistics report, then the LogoutRequest), and a bounded wait
+/// for the request to have left.
+#[derive(Clone)]
+pub struct LogoutHandle {
+    cmd_tx: mpsc::UnboundedSender<NetCommand>,
+    stats: Arc<NetStats>,
+}
+
+impl LogoutHandle {
+    /// Asks for the logout; returns at once. The value is for [`Self::wait_sent`].
+    pub fn request(&self) -> u64 {
+        let before = self.stats.logout_requests.load(std::sync::atomic::Ordering::Relaxed);
+        let _ = self.cmd_tx.send(NetCommand::Logout);
+        before
+    }
+
+    /// Waits, `timeout` at most, for the LogoutRequest of a `request` that
+    /// returned `before` to have been sent; true when it was. Never waits
+    /// for the LogoutReply.
+    pub fn wait_sent(&self, before: u64, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.stats.logout_requests.load(std::sync::atomic::Ordering::Relaxed) > before {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
+mod logout_handle_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    #[test]
+    fn the_handle_asks_the_same_logout_and_waits_for_its_request_to_leave() {
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+        let stats = Arc::new(NetStats::default());
+        let handle = LogoutHandle {
+            cmd_tx,
+            stats: stats.clone(),
+        };
+        let before = handle.request();
+        assert!(matches!(cmd_rx.try_recv(), Ok(NetCommand::Logout)));
+        // nothing sent yet: the wait ends on its bound, not on the reply
+        assert!(!handle.wait_sent(before, Duration::from_millis(30)));
+        // the session sent the LogoutRequest (`send_logout_request`)
+        stats.logout_requests.fetch_add(1, Ordering::Relaxed);
+        assert!(handle.wait_sent(before, Duration::from_millis(30)));
     }
 }
 
