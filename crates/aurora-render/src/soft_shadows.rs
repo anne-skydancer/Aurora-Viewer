@@ -14,7 +14,8 @@
 //! Beyond the Legacy Viewer, which softens its shadows in screen space by a
 //! fixed pixel radius (`RenderShadowBlurSize`, with SSAO on only): here the
 //! penumbra is in metres, grows with the distance of the caster, and is
-//! never narrower than 1.5 cm, sharp where a shadow touches what casts it.
+//! never narrower than the filter of before (3 cm across): where it would be,
+//! the shadow takes that filter, with taps that are the same for every pixel.
 //! The light is 2.3 degrees across at a softness of 1 (the look of the first
 //! soft shadows PR, #2288); the real sun, 0.53 degrees, is a softness of 0.23.
 //! The search for casters reads the shadow atlas's minimum depths over blocks
@@ -22,9 +23,11 @@
 //! `mm_build`), so that no thin caster slips between the texels of a block.
 //!
 //! Off, nothing is created or drawn, and the shadows are those of before to
-//! the pixel: the pipelines are made with the first frame that wants them,
-//! the mask with the targets, and the casters' culling planes are those of
-//! before ([`reach`] is 0).
+//! the pixel: the scene's pipelines are a variant compiled without the soft
+//! path (`SOFT_PATH` in common.wgsl, rebuilt in the background when the
+//! setting changes), the mask is made with the targets, and the casters'
+//! culling planes are those of before ([`reach`] is 0). A softness of 0 draws
+//! no mask either: it is the shadows of before.
 //!
 //! `AURORA_SOFT_SHADOWS=0|1|alt` overrides the setting for a comparison;
 //! `alt` switches every second.
@@ -37,9 +40,9 @@ use glam::{Mat4, Vec3};
 /// is a light 2.3 degrees across, the real sun (0.53 degrees) about 0.23.
 const LIGHT_TAN: f32 = 0.02;
 
-/// The least radius of the filter, in metres (`FILTER_FLOOR` in
-/// soft_shadows.wgsl): a shadow is sharp where it touches what casts it,
-/// sharper than the 3 cm filter of before.
+/// The least half width of the penumbra, in metres (`FILTER_FLOOR` in
+/// soft_shadows.wgsl): half the width of the 3 cm filter of before, which
+/// takes the shadow wherever the penumbra would be narrower than it.
 pub(crate) const FILTER_FLOOR: f32 = 0.015;
 
 /// Radius of the light of a projector at a softness of 1, in metres: a
@@ -81,11 +84,74 @@ pub(crate) fn search_radius(softness: f32) -> f32 {
 
 /// Radius of the filter at a point whose casters are `gap` metres nearer the
 /// light, at `softness`: the light's half width seen from there, never under
-/// [`FILTER_FLOOR`] (contact hardening) nor over [`search_radius`]. Mirrored
+/// [`FILTER_FLOOR`] nor over [`search_radius`]. Mirrored
 /// by `cascade_soft` in soft_shadows.wgsl (the tests state the model).
 #[cfg(test)]
 pub(crate) fn filter_radius(gap: f32, softness: f32) -> f32 {
     (gap.max(0.0) * light_tan(softness)).clamp(FILTER_FLOOR, search_radius(softness).max(FILTER_FLOOR))
+}
+
+/// How many times the gap of the casters at the point itself a gathered
+/// blocker may be from the receiver and still weigh 1 (`NEAR_REACH` in
+/// soft_shadows.wgsl).
+#[cfg(test)]
+pub(crate) const NEAR_REACH: f32 = 3.0;
+
+/// The weight of a gathered blocker `gap` metres from the receiver when the
+/// limit is `accept`: 1 up to it, 0 from twice it, a smoothstep between.
+#[cfg(test)]
+pub(crate) fn blocker_weight(gap: f32, accept: f32) -> f32 {
+    if !accept.is_finite() {
+        return 1.0;
+    }
+    let t = ((gap - accept) / accept).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
+/// The mean gap, in metres, the search averages over its blockers: the
+/// point's own texels' hits (`local`, a gap of 0 is a texel that is not
+/// one) all count; the gathered ones (`gathered`)
+/// weigh by [`blocker_weight`] against `NEAR_REACH` times the mean of the
+/// local gaps over `own` (the receiver's own surface reads that much nearer
+/// the light across a texel: not a caster) plus a floor of the larger of
+/// 10 cm and two texels (`texel_m`). With no such caster at the point every hit weighs 1.
+/// Mirrored by `cascade_soft` in soft_shadows.wgsl (the tests state the model).
+#[cfg(test)]
+pub(crate) fn mean_gap(local: &[f32], gathered: &[f32], own: f32, texel_m: f32) -> f32 {
+    let casters: Vec<f32> = local.iter().copied().filter(|&g| g > own).collect();
+    let near = if casters.is_empty() {
+        f32::INFINITY
+    } else {
+        casters.iter().sum::<f32>() / casters.len() as f32
+    };
+    let accept = NEAR_REACH * near + (2.0 * texel_m).max(0.1);
+    let mut sum: f32 = local.iter().sum();
+    // only the local texels that are hits weigh, as `blockers` in the shader
+    let mut weight = local.iter().filter(|&&g| g > 0.0).count() as f32;
+    for &g in gathered {
+        let w = blocker_weight(g, accept);
+        sum += g * w;
+        weight += w;
+    }
+    sum / weight.max(1e-3)
+}
+
+/// Half the width, in metres, the filter of before spans in a cascade whose
+/// texel is `texel_m` metres: its taps keep between half a texel and two
+/// texels apart (`legacy_half` in soft_shadows.wgsl, tested as text).
+#[cfg(test)]
+pub(crate) fn legacy_half(texel_m: f32) -> f32 {
+    (0.5 * 0.03_f32).clamp(0.75 * texel_m, 3.0 * texel_m)
+}
+
+/// The share of the filter of before in a shadow whose rotated taps span
+/// `footprint` metres (half width): 1 up to `legacy_half`, 0 from
+/// `LEGACY_FADE` (3) times it, a smoothstep between (`before` in
+/// `cascade_soft`).
+#[cfg(test)]
+pub(crate) fn legacy_share(footprint: f32, legacy_half: f32) -> f32 {
+    let t = ((footprint - legacy_half) / (2.0 * legacy_half)).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
 }
 
 /// How far, in metres, the casters of a cascade are read around a point
@@ -639,8 +705,63 @@ mod tests {
         // by max, not in quadrature); under 75 cm the floor holds
         assert!((filter_radius(5.0, 1.0) - 0.10).abs() < 1e-6);
         assert_eq!(filter_radius(0.5, 1.0), FILTER_FLOOR);
-        // the real sun (0.23), a caster 10 m up: 4.6 cm
+        // the real sun (a softness of 0.23), a caster 10 m up: 4.6 cm
         assert!((filter_radius(10.0, 0.23) - 0.046).abs() < 1e-4);
+    }
+
+    /// A thin post's contact shadow: casters much farther from the receiver
+    /// than the post (metres, against its centimetres at the foot) used to
+    /// drown its gap in the mean, the penumbra widened there and a thin shadow
+    /// faded in from the post, lighter at the contact than away from it.
+    #[test]
+    fn a_contact_shadow_is_not_widened_by_far_blockers() {
+        let (own, texel_m) = (0.2, 0.02);
+        let far = [3.0_f32; 24];
+        // past the receiver's own texel slope, the post's gap is the mean
+        let kept = mean_gap(&[0.3; 4], &far, own, texel_m);
+        assert!((kept - 0.3).abs() < 1e-5);
+        assert_eq!(filter_radius(kept, 1.0), FILTER_FLOOR);
+        // in it the texels cannot tell the post from the receiver's own
+        // surface, so nothing is held back: the filter of before's own fade
+        // (a texel's slope along the ground) is all that is left there
+        assert!(mean_gap(&[0.1; 4], &far, own, texel_m) > 2.0);
+        // a tall caster's penumbra over a point whose texels see only its own
+        // surface (nearer the light by a little): every hit weighs 1
+        let roof = [3.0_f32; 28];
+        let m = mean_gap(&[0.15, 0.15, 0.0, 0.0], &roof, own, texel_m);
+        assert!((m - (0.3 + 3.0 * 28.0) / 30.0).abs() < 1e-4);
+        assert!(filter_radius(m, 1.0) > 0.05);
+        // and over a point whose texels see the roof too: all of it stays
+        assert!((mean_gap(&[3.0; 4], &roof, own, texel_m) - 3.0).abs() < 1e-5);
+        // a caster a little farther than the one at the point stays whole
+        assert!((mean_gap(&[0.3; 4], &[0.5; 8], own, texel_m) - 5.2 / 12.0).abs() < 1e-5);
+    }
+
+    /// Along a contact shadow the mean gap, and so the filter and the share of
+    /// the filter of before, follow the post's gap with no jump: the limit
+    /// between the casters that count and those that do not is a smoothstep.
+    #[test]
+    fn the_mean_gap_has_no_jump_along_a_contact_shadow() {
+        let (own, texel_m) = (0.2_f32, 0.02_f32);
+        let far = [3.0_f32; 24];
+        let hard = |d: f32| {
+            let accept = NEAR_REACH * d + 0.1;
+            let kept: Vec<f32> = far.iter().copied().filter(|&g| g <= accept).collect();
+            (4.0 * d + kept.iter().sum::<f32>()) / (4.0 + kept.len() as f32)
+        };
+        let (mut last, mut worst, mut hard_worst) = (mean_gap(&[0.25; 4], &far, own, texel_m), 0.0_f32, 0.0_f32);
+        let mut hard_last = hard(0.25);
+        let mut prev_mean = 0.0_f32;
+        for k in 0..=600 {
+            let d = 0.25 + 0.01 * k as f32;
+            let m = mean_gap(&[d; 4], &far, own, texel_m);
+            worst = worst.max((m - last).abs());
+            hard_worst = hard_worst.max((hard(d) - hard_last).abs());
+            assert!(m >= prev_mean - 1e-4, "the mean gap only grows with the post's gap ({d} m)");
+            (last, hard_last, prev_mean) = (m, hard(d), m);
+        }
+        assert!(worst < 0.3, "no jump: {worst}");
+        assert!(hard_worst > 1.0, "the hard limit did jump: {hard_worst}");
     }
 
     #[test]
@@ -677,11 +798,60 @@ mod tests {
     }
 
     #[test]
+    fn the_filter_of_before_blends_into_the_rotated_taps_continuously() {
+        // the cascades' texels, in metres: fine to coarse
+        for texel_m in [0.005_f32, 0.007, 0.02, 0.024, 0.06, 0.08] {
+            let half = legacy_half(texel_m);
+            assert!(half >= 0.75 * texel_m && half <= 3.0 * texel_m);
+            // the footprint of the rotated taps is never under 3/4 of a texel
+            let foot = |reach: f32| reach.max(FILTER_FLOOR).max(0.75 * texel_m);
+            assert_eq!(legacy_share(foot(0.0), half), 1.0, "texel {texel_m}");
+            assert_eq!(legacy_share(half, half), 1.0);
+            assert_eq!(legacy_share(3.0 * half, half), 0.0);
+            assert_eq!(legacy_share(10.0 * half, half), 0.0);
+            let mut last = 1.0;
+            let mut x = 0.0_f32;
+            while x < 0.4 {
+                let share = legacy_share(foot(x), half);
+                assert!((0.0..=1.0).contains(&share));
+                assert!(share <= last + 1e-6, "never grows with the reach");
+                assert!(last - share < 0.02, "continuous: {last} to {share} at {x} (texel {texel_m})");
+                last = share;
+                x += 0.0002;
+            }
+        }
+        // the fine cascade: the filter of before up to the floor, as it was
+        assert_eq!(legacy_half(0.007), FILTER_FLOOR);
+        // a coarse texel widens the zone: reaches under its footprint still take it
+        assert!(legacy_share(0.04, legacy_half(0.06)) == 1.0);
+    }
+
+    #[test]
     fn the_shader_keeps_the_constants_of_the_shading() {
         let shader = include_str!("shaders/soft_shadows.wgsl");
         let common = include_str!("shaders/common.wgsl");
         let line = format!("const FILTER_FLOOR: f32 = {};", FILTER_FLOOR);
         assert!(shader.contains(&line), "soft_shadows.wgsl: {line}");
+        // the filter of before, whose width the narrow penumbrae fall back to:
+        // its taps' count and spacing are those of `cascade_shadow`
+        for text in [
+            "clamp(u32(ceil(span / texel - 1e-3)) + 1u, 4u, 7u)",
+            "clamp(half_uv * (2.0 / 3.0), 0.5 * texel, 2.0 * texel)",
+            "let half_uv = SHADOW_PENUMBRA * 0.5 / radius;",
+            "let span = 3.0 * spacing;",
+        ] {
+            assert!(shader.contains(text) && common.contains(text), "{text}");
+        }
+        assert!(shader.contains(&format!("const NEAR_REACH: f32 = {:?};", NEAR_REACH)));
+        for text in [
+            "let accept = NEAR_REACH * near_gap + max(0.1, 2.0 * texel_m) * depth_per_metre;",
+            "smoothstep(vec4<f32>(accept), vec4<f32>(2.0 * accept), gap)",
+            "gap > vec4<f32>(own)",
+            "let reach = separation / max(weight, 1e-3) / depth_per_metre * p.light.x;",
+        ] {
+            assert!(shader.contains(text), "{text}");
+        }
+        assert!(shader.contains("const SHADOW_PENUMBRA: f32 = 0.03;") && common.contains("const SHADOW_PENUMBRA: f32 = 0.03;"));
         // the normal offset and the receiver bias of `cascade_shadow`
         assert!(shader.contains("n * (0.02 + 0.04 * f32(cascade))"));
         assert!(common.contains("n * (0.02 + 0.04 * f32(cascade))"));
@@ -763,7 +933,7 @@ mod tests {
     fn the_shader_texts_hold_the_surface_and_lift_rules() {
         let common = include_str!("shaders/common.wgsl");
         // a blended face outside the occlusion depth keeps the filter of before
-        assert!(common.contains("if (frame.soft.x < 0.5 || !screen_surface) {"));
+        assert!(common.contains("if (!SOFT_PATH || frame.soft.x < 0.5 || !screen_surface) {"));
         // the terrain's wet glint takes the lift on a classic sky only (the
         // others have it from `sun_shadow`)
         assert!(include_str!("shaders/env.wgsl").contains("*select(sh, shadow_lift(sh), is_classic_sky()))*wet;"));
@@ -852,7 +1022,7 @@ mod tests {
         // contact hardening: the caster 0.5 m up has a narrower penumbra than
         // the one 3 m up, whatever the light
         assert!(high.2 > low.2 * 1.3, "higher casters give wider penumbrae: {} vs {}", high.2, low.2);
-        // a larger light gives a wider one, a pinpoint light the 1.5 cm floor
+        // a larger light gives a wider one, a light with no size the shadows of before
         assert!(high.2 > mid.2 * 1.3, "a larger light gives a wider one: {} vs {}", high.2, mid.2);
         assert!(
             mid.2 > pinpoint.2 * 1.3,

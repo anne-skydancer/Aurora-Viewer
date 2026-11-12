@@ -4975,7 +4975,7 @@ both open states and the selection count. Capture at frame 620.
 | `AURORA_DEMO_COPLANAR_DECAL=1`, `mask` or `blend` | Two dirt strips blended over a grass face of the same static mesh, 9 m along the start view (#3059) |
 | `AURORA_DEMO_FOLIAGE=1` | The same cut-out foliage panel at 5, 10, 20, 35 and 60 m along the start view (alpha coverage of the mips) |
 | `AURORA_DEMO_PLANTS=1`, `far` or `dense` | Linden trees and grass: every species near or far along the start view, or a forest |
-| `AURORA_DEMO_SOFT_SHADOWS=1` or `near` | A pergola, a 14 m pole, a table and a sphere on a pale receiving plate in a 35 degree sun, soft shadows on (`near`: at 0.4 of the distance) |
+| `AURORA_DEMO_SOFT_SHADOWS=1`, `near` or `slope` | A pergola, a 14 m pole, a table, a thin post and a sphere on a pale receiving plate in a 35 degree sun, soft shadows on (`near`: at 0.4 of the distance) |
 | `AURORA_DEMO_PARTICLE_GLASS=1`, `sparse` or `dense` | Fountains behind, in front of and through three glass panes (one fullbright, one glowing; the emitters show red: the particle-source beacon highlight); 60 spread-out panes and 6 emitters; or 300 thin panes and 36 emitters (the cap of 256 particle runs) |
 | `AURORA_PARTICLE_INTERLEAVE=0` | Particles as before the interleave: all after the blended faces and the overlays, radial sort, not clipped at the water, none of its pipelines or targets made (A/B; read at launch, not live) |
 | `AURORA_DEMO_BLEND_SHADOWS=1`, `alpha` or `dense` | Alpha-blended panels in the sun (greenhouse pane, face and texture alpha), the stochastic shadows' panes, or 400 greenhouse panes |
@@ -5259,7 +5259,7 @@ both open states and the selection count. Capture at frame 620.
   left half, leaves in the top right quarter, grass blades from the bottom
   edge), only with this scenario. Close-ups: `AURORA_DEMO_CAMERA=close,790,185,80`
   on the tree behind the palm, capture at frame 760.
-- **`AURORA_DEMO_SOFT_SHADOWS=1|near`**: things standing on a pale receiving plate (level whatever the terrain) in the sun to see how
+- **`AURORA_DEMO_SOFT_SHADOWS=1|near|slope`**: things standing on a pale receiving plate (level whatever the terrain) in the sun to see how
   the penumbra of a shadow grows with the distance of its caster
   (`demo_soft_shadows.rs`), from `AURORA_DEMO_POS="132,126"`: a pergola
   (a 6 m roof 3 m up), a pole 14 m high, a table (top 0.75 m up) and a
@@ -5272,6 +5272,14 @@ both open states and the selection count. Capture at frame 620.
   lets half the light into every shadow. `AURORA_DEMO_CROWD=1` adds a
   standing avatar. Look for acne on the sphere, none on the faces of the
   table, and no halo at the avatars' edges with `AURORA_AA=3` (MSAA 4x).
+  A thin lamp post (9 cm, 3.5 m) stands flush on the plate in both modes
+  (`1` puts it 8 m ahead, `near` 3.2 m): `near` with `AURORA_DEMO_SUN=27,5`
+  (shadow towards the camera) shows its shadow, which must be darkest and
+  sharpest where it touches the post and, with `AURORA_SHADOW_SOFTNESS=1`,
+  only lighten further out, at 5, 15, 30 and 60 degrees; it must not fade
+  in from the contact (a 5 degree sun did that at 0.25 and, at 1, lost the
+  post's, the table legs' and the pergola legs' shadows). `slope` adds a
+  ramp tilted 35 degrees away from the sun with a second post on it.
 - **`AURORA_DEMO_PARTICLE_GLASS=1|sparse|dense`** (`demo_particle_glass.rs`), with
   `AURORA_PARTICLE_INTERLEAVE=0|1` for the A/B: particles drawn between the
   blended faces by view depth (`scene/particle_order.rs`). `1`: two 3 m
@@ -11349,7 +11357,7 @@ What the inventory must show with these scenarios:
 | `AURORA_SSIL_INTENSITY=<0-8>` | Strength of GTAO's indirect light for this launch |
 | `AURORA_CONTACT_SHADOWS=0`, `1`, `alt`, `prepass`, `shell` or `deep` | Sun contact shadows off, on, by turns, cast by the depth prepass alone, by thin shells, or with every occluder 5 cm deep |
 | `AURORA_SOFT_SHADOWS=0`, `1` or `alt` | Soft sun shadows off, on or one second in two for this launch |
-| `AURORA_SHADOW_SOFTNESS=<0-2>`, `AURORA_SHADOW_INTENSITY=<0-1>` | Size of the light of the soft shadows (1 = 2.3 degrees across, the real sun is 0.23) and darkness of the sun's shadows (1 = as before) for this launch |
+| `AURORA_SHADOW_SOFTNESS=<0-2>`, `AURORA_SHADOW_INTENSITY=<0-1>` | Size of the light of the soft shadows (1 = 2.3 degrees across; the real sun, 0.53 degrees, is a softness of 0.23) and darkness of the sun's shadows (1 = as before) for this launch |
 | `AURORA_SOFT_PROJECTORS=0` | With the soft shadows, the projectors keep their 5-tap shadows (to measure their cost apart) |
 | `AURORA_PROJECTOR_TRACE=1` | Log projector shadow selection and fades each frame |
 | `AURORA_CONTACT_SOFT=0` | Contact shadows with hard pixel edges (no softening) |
@@ -11866,12 +11874,12 @@ What the inventory must show with these scenarios:
   light's size (2.3 degrees across at a softness of 1) gives the
   penumbra, and 12 rotated taps take the light (32 in a photo), then a
   bilateral blur in the world's metres removes their noise. The penumbra is
-  never narrower than 1.5 cm: sharp at the contact, soft far from it. The shading reads the mask where its surface is the one of the
+  never narrower than the filter of before (3 cm across): where it would be, the shadow takes that filter (the same taps for every pixel, so no grain and nothing that crawls with the camera; it ignores the `AURORA_SHADOW_FILTER=gaps` and `AURORA_SHADOW_BIAS=legacy` comparisons), fading into the rotated taps over three times the half width that filter spans in the cascade, and the two cascades of a split are mixed as before where both take it. At the default softness (0.25) a caster less than about 9 m above the receiver gives that filter, so the default is close to the previous shadows by design. A softness of 0 draws no mask at all: exactly the shadows of before. The shading reads the mask where its surface is the one of the
   prepass; blended faces in front of it, water, reflections and probes keep
-  the filter of before. Off, nothing is created or drawn and the casters'
+  the filter of before. Off, nothing is created or drawn, the scene's shaders are compiled without the soft path (a variant built in the background when the setting changes, like the samples and SSR) and the casters'
   culling planes are those of before. **`AURORA_SHADOW_SOFTNESS=<0-2>`**
-  (the slider, active with the soft shadows only; the default is 0.25, a light about 0.6 degrees across, close to the real sun (0.23); 1 is a light 2.3 degrees
-  across, the look of PR 2288, the real sun being 0.23; 0 a light with no
+  (the slider, active with the soft shadows only; the default is 0.25, a light about 0.6 degrees across, close to the real sun (0.53 degrees, a softness of 0.23); 1 is a light 2.3 degrees
+  across, the look of PR 2288; 0 a light with no
   size) and
   **`AURORA_SHADOW_INTENSITY=<0-1>`** (how dark the sun's shadows are, with
   or without the soft shadows; 1 is as before) override the settings.
