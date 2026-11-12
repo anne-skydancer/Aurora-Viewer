@@ -38,6 +38,7 @@ pub mod main_thread;
 mod motion_debug;
 mod motion_history;
 mod occlusion;
+pub mod oit_stochastic;
 pub mod pacing;
 mod packet;
 mod part_pick;
@@ -60,6 +61,7 @@ mod shadow_merge;
 mod soft_shadows;
 #[cfg(test)]
 mod specular_aa;
+pub mod spirv_fix;
 pub mod stars;
 pub mod start_progress;
 pub mod stereo_view;
