@@ -141,6 +141,7 @@ mod safe_graphics;
 mod script_clicks;
 mod script_recovery;
 mod scripts;
+mod selection_turn;
 mod settings_backup;
 mod shape_editor;
 mod shortcuts;
@@ -622,6 +623,9 @@ pub struct App {
     double_click: crate::autopilot::DoubleClickDetector,
     double_press: bool,
     autopilot: Option<crate::autopilot::AutoPilot>,
+    /// The yaw the avatar turns to, facing what it selected
+    /// (FSTurnAvatarToSelectedObject, app/selection_turn.rs).
+    selection_turn: Option<f32>,
     follow_ui: ui::follow::FollowUi,
     portal_ui: ui::portals::PortalUi,
     /// Build › Edit particles (ParticleEditor).
@@ -958,6 +962,10 @@ pub struct App {
     /// Settings last applied to the engine and the authorized stream URL.
     applied_audio: Option<crate::settings::AudioSettings>,
     stream_url: String,
+    /// The parcel music's fade between stations (FSFadeAudioStream) and the
+    /// fade volume last given to the Music channel.
+    music_fade: parcel_music::Fade,
+    music_fade_gain: f32,
     /// The parcel music's title last told (ShowStreamMetadata).
     stream_title_said: Option<String>,
     /// Every sound is cut because the window is minimised (MuteWhenMinimized).
@@ -1785,6 +1793,7 @@ impl App {
             double_click: Default::default(),
             double_press: false,
             autopilot: None,
+            selection_turn: None,
             autopilot_flags: 0,
             autopilot_stop_pending: false,
             mic_on: false,
@@ -1986,6 +1995,8 @@ impl App {
             },
             applied_audio: None,
             stream_url: String::new(),
+            music_fade: Default::default(),
+            music_fade_gain: 1.0,
             stream_title_said: None,
             minimized_mute: audio_mute::MinimizedMute::default(),
             crash_state_at: None,
@@ -3220,9 +3231,12 @@ impl App {
         self.panels.pose_stand = false;
         self.parcel_music.enter(false);
         self.stream_url.clear();
+        self.music_fade.reset();
+        self.music_fade_gain = 1.0;
         self.music_status = Default::default();
         if let Some(engine) = &self.audio_engine {
             engine.stop_stream();
+            engine.set_volume(aurora_audio::Channel::Music, self.settings.audio.volume[4]);
         }
         // the next login's arrival steps again; steps under way end with
         // the session, the user's draw distance back
@@ -6260,14 +6274,26 @@ impl App {
         if !self.settings.audio.enabled[4] {
             engine.set_enabled(aurora_audio::Channel::Music, false);
         }
-        if want != self.stream_url {
-            if want.is_empty() {
-                engine.stop_stream();
-            } else {
-                log::info!("parcel music: {want}");
-                engine.play_stream(&want);
+        // A change of station fades (FSFadeAudioStream); a stop by hand, the
+        // channel turned off or leaving the world cuts at once.
+        let smooth = in_world && self.settings.audio.enabled[4] && self.parcel_music.requested();
+        let times = parcel_music::FadeTimes {
+            on: self.settings.audio.music_fade,
+            fade_in: self.settings.audio.music_fade_in,
+            fade_out: self.settings.audio.music_fade_out,
+        };
+        let (change, gain) = self.music_fade.step(&want, smooth, times, Instant::now());
+        match change {
+            Some(parcel_music::StreamChange::Play(url)) => {
+                log::info!("parcel music: {url}");
+                engine.play_stream(&url);
+                self.stream_url = url;
             }
-            self.stream_url = want;
+            Some(parcel_music::StreamChange::Stop) => {
+                engine.stop_stream();
+                self.stream_url.clear();
+            }
+            None => {}
         }
         if self.applied_audio.as_ref() != Some(&self.settings.audio) {
             let a = &self.settings.audio;
@@ -6278,11 +6304,18 @@ impl App {
             }
             // same order as AUDIO_CHANNELS
             for (i, ch) in aurora_audio::Channel::ALL.iter().enumerate() {
-                engine.set_volume(*ch, a.volume[i]);
+                let fade = if *ch == aurora_audio::Channel::Music { gain } else { 1.0 };
+                engine.set_volume(*ch, a.volume[i] * fade);
                 engine.set_muted(*ch, a.muted[i] || (i == 0 && self.minimized_mute.active));
                 engine.set_enabled(*ch, i == 0 || a.enabled[i]);
             }
             self.applied_audio = Some(a.clone());
+            self.music_fade_gain = gain;
+        }
+        if gain != self.music_fade_gain {
+            // the mixer smooths each change (no zipper noise)
+            engine.set_volume(aurora_audio::Channel::Music, self.settings.audio.volume[4] * gain);
+            self.music_fade_gain = gain;
         }
         let status = engine.stream_status();
         self.music_status = ui::audio::MusicStatus::read(
@@ -7557,6 +7590,16 @@ impl App {
             mods,
         );
         self.flush_build();
+        // LLToolSelect::handleObjectSelection turns the avatar to what the
+        // Edit tool's click selected (lltoolcomp.cpp: move, rotate, stretch;
+        // not Create, Grab or Land) (app/selection_turn.rs)
+        if let Some(idx) = target
+            && self.build.tool == crate::build::Tool::Edit
+            && !self.build.selection.is_empty()
+            && let Some(bounds) = self.build.bounds(&self.world, Instant::now())
+        {
+            self.turn_to_selection(idx, bounds.center);
+        }
         if used {
             self.left_down = true;
         }
@@ -10025,6 +10068,7 @@ impl App {
             self.input = input;
         }
         self.update_autopilot(dt);
+        self.update_selection_turn(dt);
         self.vr_update_body_follow(typing, dt);
         if self.in_world() && self.settings.automatic_land {
             self.world.auto_land(&self.input);
@@ -13343,6 +13387,26 @@ impl App {
         // only: no right is changed, nothing is saved), once logged in
         if self.demo && self.frame_count == 60 && std::env::var("AURORA_DEMO_STATUSMENU").is_ok_and(|v| v == "invisible") {
             self.world.status.invisible.on = true;
+        }
+        // AURORA_DEMO_MUSIC=fade: the radio on at frame 300, the parcel's
+        // station changed at frame 600 (the log gives the fade out, then in);
+        // the media filter's question about each station is answered "allow
+        // once", as a click on it would
+        if self.demo && (300..=900).contains(&self.frame_count) && std::env::var("AURORA_DEMO_MUSIC").as_deref() == Ok("fade") {
+            if self.frame_count == 300 && !self.parcel_music.requested() {
+                self.parcel_music.toggle();
+            }
+            if let Some(parcel) = self.world.parcel.as_mut().filter(|_| self.frame_count == 600) {
+                std::sync::Arc::make_mut(parcel).music_url = format!("{}next", crate::demo::land::MUSIC_URL);
+            }
+            if let Some(url) = self.world.media_filter.question().map(|q| q.url.clone()) {
+                self.world.media_filter.answer(&url, true, crate::media::filter::Remember::Once);
+            }
+        }
+        // AURORA_DEMO_TURN_SELECT=1: the camera off the avatar, then an
+        // object to its side selected (app/selection_turn.rs)
+        if self.demo && (300..=480).contains(&self.frame_count) && std::env::var_os("AURORA_DEMO_TURN_SELECT").is_some() {
+            self.demo_selection_turn();
         }
         // AURORA_DEMO_CONTACTS: contact sets and aliases to show, once logged in
         if self.demo && self.frame_count == 60 && std::env::var_os("AURORA_DEMO_CONTACTS").is_some() {
