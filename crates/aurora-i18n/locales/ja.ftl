@@ -5312,6 +5312,11 @@ ui-options-shadow-softness-help = ソフトシャドウでの光源の大きさ�
 ui-options-shadow-softness-needs-soft = 使うにはソフトシャドウをオンにしてください
 ui-options-shadow-intensity = 影の濃さ
 ui-options-shadow-intensity-help = 太陽の影の暗さです。1は通常の濃さで、小さくすると影に入る光が増えます
+ui-options-shadow-alpha = 確率的な影
+ui-options-shadow-alpha-help = 半透明の面（ガラス、髪、葉）が太陽とプロジェクターの影をどう落とすかを選びます。Legacy: Legacy Viewerと同じで、一定の半影になり、不透明度5%未満と窓ガラスには影がなく、88%以上で完全な影になります。Aurora: 不透明度に比例した影になり、重なった層ほど濃く、薄いガラスには薄い影が付きます。ソフトシャドウやTAAを使わないと、近くで細かい粒状感が出ます
+ui-options-shadow-alpha-legacy = レガシー
+ui-options-shadow-alpha-aurora = Aurora
+ui-options-aurora-shadow-alpha-help = 半透明の面（ガラス、髪、葉）が太陽とプロジェクターの影をどう落とすかを選びます。Legacy: Legacy Viewerと同じで、一定の半影になり、不透明度5%未満と窓ガラスには影がなく、88%以上で完全な影になります。Aurora: 不透明度に比例した影になり、重なった層ほど濃く、薄いガラスには薄い影が付きます。ソフトシャドウやTAAを使わないと、近くで細かい粒状感が出ます。Legacy Viewerとは異なる表示になります
 ui-options-when-i-am-away = 一時退席中：
 ui-options-when-the-window-is-not-in-the-foreground-the = ウィンドウが前面にないとき、ビューアは速度を落としてシステムリソースを解放します。デフォルトで有効
 ui-options-glow-amount-instead-of-the-image-red-glow-10 = 画像の代わりにグローの量（赤 = グロー × 10、緑 = × 2）

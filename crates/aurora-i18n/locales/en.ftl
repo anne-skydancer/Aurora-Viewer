@@ -5321,6 +5321,11 @@ ui-options-shadow-softness-help = The size of the light for the soft shadows: 1 
 ui-options-shadow-softness-needs-soft = Turn on Soft shadows to use this
 ui-options-shadow-intensity = Shadow intensity
 ui-options-shadow-intensity-help = How dark the sun's shadows are: 1 is the normal darkness, lower lets more light into them
+ui-options-shadow-alpha = Stochastic shadows
+ui-options-shadow-alpha-help = How alpha-blended faces (glass, hair, leaves) cast sun and projector shadows. Legacy: as the Legacy Viewer, a flat half shadow, none under 5 % opacity, none from window panes, full from 88 %. Aurora: in proportion to their opacity, overlapping layers darker, faint glass a faint shadow; a fine grain up close without soft shadows or TAA
+ui-options-shadow-alpha-legacy = Legacy
+ui-options-shadow-alpha-aurora = Aurora
+ui-options-aurora-shadow-alpha-help = How alpha-blended faces (glass, hair, leaves) cast sun and projector shadows. Legacy: as the Legacy Viewer, a flat half shadow, none under 5 % opacity, none from window panes, full from 88 %. Aurora: in proportion to their opacity, overlapping layers darker, faint glass a faint shadow; a fine grain up close without soft shadows or TAA. Differs from the Legacy Viewer
 ui-options-when-i-am-away = When I am away:
 ui-options-when-the-window-is-not-in-the-foreground-the = When the window is not in the foreground, the viewer slows down to free system resources. Enabled by default
 ui-options-glow-amount-instead-of-the-image-red-glow-10 = Glow amount instead of the image (red = glow × 10, green = × 2)

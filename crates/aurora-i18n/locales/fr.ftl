@@ -5327,6 +5327,11 @@ ui-options-shadow-softness-help = La taille de la lumière pour les ombres douce
 ui-options-shadow-softness-needs-soft = Activez les ombres douces pour l’utiliser
 ui-options-shadow-intensity = Intensité des ombres
 ui-options-shadow-intensity-help = À quel point les ombres du soleil sont sombres : 1 est l’obscurité normale, plus bas laisse entrer plus de lumière
+ui-options-shadow-alpha = Ombres stochastiques
+ui-options-shadow-alpha-help = Comment les faces transparentes (verre, cheveux, feuillage) projettent les ombres du soleil et des projecteurs. Legacy : comme le Legacy Viewer, une demi-ombre uniforme, aucune sous 5 % d’opacité, aucune pour les vitres, pleine à partir de 88 %. Aurora : proportionnelle à l’opacité, les couches superposées assombrissent, un verre léger donne une ombre légère ; un grain fin de près sans ombres douces ni TAA
+ui-options-shadow-alpha-legacy = Legacy
+ui-options-shadow-alpha-aurora = Aurora
+ui-options-aurora-shadow-alpha-help = Comment les faces transparentes (verre, cheveux, feuillage) projettent les ombres du soleil et des projecteurs. Legacy : comme le Legacy Viewer, une demi-ombre uniforme, aucune sous 5 % d’opacité, aucune pour les vitres, pleine à partir de 88 %. Aurora : proportionnelle à l’opacité, les couches superposées assombrissent, un verre léger donne une ombre légère ; un grain fin de près sans ombres douces ni TAA. Diffère du Legacy Viewer
 ui-options-when-i-am-away = Quand je suis absent :
 ui-options-when-the-window-is-not-in-the-foreground-the = Quand la fenêtre n'est pas au premier plan, le viewer ralentit pour libérer la machine. Activé par défaut
 ui-options-glow-amount-instead-of-the-image-red-glow-10 = Quantité de glow à la place de l'image (rouge = glow × 10, vert = × 2)

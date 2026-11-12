@@ -6,7 +6,7 @@
 
 use super::super::cx::{Cx, F, field};
 use crate::build::MoveHologram;
-use crate::settings::{ChatStyle, DestinationsStyle, NotificationsStyle, PhotoWindowStyle, Settings, WorldMapStyle};
+use crate::settings::{ChatStyle, DestinationsStyle, NotificationsStyle, PhotoWindowStyle, Settings, ShadowAlpha, WorldMapStyle};
 use crate::theme::Palette;
 use crate::world::lookat::{Aim, Style};
 use egui::epaint::{Mesh, Vertex, WHITE_UV};
@@ -69,6 +69,7 @@ pub fn set_all(s: &mut Settings, look: Look) {
     s.water_effects.enabled = aurora;
     s.synchronize_animations = aurora;
     s.colored_sky_ambient = aurora;
+    s.shadow_alpha = if aurora { ShadowAlpha::Aurora } else { ShadowAlpha::Legacy };
 }
 
 /// The aurora gradient at `t` (0 at its start, 1 at its end): the brand's
@@ -391,6 +392,16 @@ pub fn page(cx: &mut Cx, tab: usize) {
                         (false, tr!("ui-options-aurora-clouds-flat"), false),
                     ],
                 );
+                // also in Graphics › Shadows, the same setting
+                cx.wide().experimental().choice(
+                    tr!("ui-options-shadow-alpha"),
+                    tr!("ui-options-aurora-shadow-alpha-help"),
+                    &field!(shadow_alpha),
+                    &[
+                        (ShadowAlpha::Aurora, aurora, true),
+                        (ShadowAlpha::Legacy, tr!("ui-options-shadow-alpha-legacy"), false),
+                    ],
+                );
             });
             cx.group(tr!("common-interface"), |cx| {
                 cx.wide().choice(
@@ -548,6 +559,16 @@ mod tests {
         assert!(s.volumetric_clouds, "nor off by the Legacy one");
         set_all(&mut s, Look::Aurora);
         assert!(s.volumetric_clouds);
+    }
+
+    #[test]
+    fn the_two_buttons_set_semi_transparent_shadows_too() {
+        let mut s = Settings::default();
+        assert_eq!(s.shadow_alpha, ShadowAlpha::Legacy, "the Legacy Viewer's rule by default");
+        set_all(&mut s, Look::Aurora);
+        assert_eq!(s.shadow_alpha, ShadowAlpha::Aurora);
+        set_all(&mut s, Look::Legacy);
+        assert_eq!(s.shadow_alpha, ShadowAlpha::Legacy);
     }
 
     #[test]
