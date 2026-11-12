@@ -196,6 +196,10 @@ pub mod object_snap;
 /// region that puts part of it back by itself.
 #[path = "demo_outfit_restore.rs"]
 pub mod outfit_restore;
+/// Fountains behind, in front of and through glass panes, for the order of
+/// particles among the blended faces (AURORA_DEMO_PARTICLE_GLASS).
+#[path = "demo_particle_glass.rs"]
+pub mod particle_glass;
 #[path = "demo_people.rs"]
 pub mod people;
 /// Avatar body physics: a physics layer and balls on the body (AURORA_DEMO_PHYSICS).
@@ -6144,6 +6148,7 @@ pub fn events() -> Vec<NetEvent> {
     ev.extend(plants::events());
     ev.extend(blend_shadows::events());
     ev.extend(soft_shadows::events());
+    ev.extend(particle_glass::events());
     ev.extend(alpha_mask_ab::events());
     ev.extend(tortured_prims::events());
     ev.extend(bom_rezzed::events());

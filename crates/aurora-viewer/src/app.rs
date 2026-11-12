@@ -11249,6 +11249,7 @@ impl App {
             let mut out = std::mem::take(&mut self.scene.lists.particles);
             let scene = &mut self.scene;
             scene.particles.set_preview(self.particle_editor.preview());
+            let sort = scene.particle_basis(self.camera.position);
             scene.particles.update(
                 &mut gfx.renderer,
                 &mut scene.textures,
@@ -11256,6 +11257,7 @@ impl App {
                 dt,
                 frozen,
                 self.camera.position,
+                sort,
                 max_particles,
                 self.settings.draw_distance,
                 self.settings.attached_particles,
@@ -11267,6 +11269,7 @@ impl App {
             if self.settings.world_overlays.hide_particles {
                 self.scene.lists.particles.clear();
             }
+            self.scene.order_particles();
             t_part = Instant::now();
         }
         let (lights, spot_shadows) = if in_world && studio_view.is_none() {
