@@ -27,7 +27,8 @@ use uuid::Uuid;
 /// take it), whatever the camera does.
 pub const FADE_SECONDS: f32 = 0.5;
 
-/// Distance bands of the overflow rule start at this many metres and double.
+/// Band 0 is under twice this many metres (8 m), then each band doubles:
+/// `band`.
 const BAND_BASE: f32 = 4.0;
 
 /// A projector that may hold a shadow map this frame.
@@ -50,7 +51,8 @@ pub fn intrinsic_score(color: [f32; 3], reach: f32) -> f32 {
     color[0].max(color[1]).max(color[2]) * reach * reach
 }
 
-/// Distance band: floor(log2(dist / 4 m)), none nearer than 8 m.
+/// Distance band: floor(log2(dist / 4 m)); band 0 is under 8 m, then each
+/// band doubles (8 to 16 m is band 1, 16 to 32 m band 2...).
 fn band(dist: f32) -> i32 {
     (dist.max(BAND_BASE) / BAND_BASE).log2().floor() as i32
 }
@@ -108,19 +110,36 @@ impl ProjectorSlots {
 
     /// One frame: `candidates` are the projectors that cast shadows and may
     /// hold a map (visible, within the draw distance), `limit` the budget.
+    ///
+    /// A budget that shrinks does not drop the maps past it at once: their
+    /// owners fade out (`FADE_SECONDS`) and the maps are freed when they are
+    /// out, and no one is given a map past the limit meanwhile. (The renderer
+    /// draws only the maps its atlas holds: when the atlas shrinks with the
+    /// budget, a setting change, they vanish with it.)
     pub fn update(&mut self, candidates: &[Emitter], limit: usize, dt: f32) {
-        self.slots.resize(limit, None);
+        if self.slots.len() < limit {
+            self.slots.resize(limit, None);
+        }
         let amount = dt.max(0.0) / FADE_SECONDS;
         let find = |id: Uuid| candidates.iter().find(|c| c.id == id);
         // owners: gone ones free their map at once (their light is gone
         // too), the rest follow their object; fades move
-        for slot in &mut self.slots {
+        for (k, slot) in self.slots.iter_mut().enumerate() {
             let Some(s) = slot else { continue };
             let Some(c) = find(s.id) else {
                 *slot = None;
                 continue;
             };
             s.idx = c.idx;
+            // past the budget: fade out, then the map is free (and goes)
+            if k >= limit {
+                s.leaving_for = None;
+                s.fade = (s.fade - amount).max(0.0);
+                if s.fade == 0.0 {
+                    *slot = None;
+                }
+                continue;
+            }
             match s.leaving_for {
                 // the successor is gone: keep the map
                 Some(next) if find(next).is_none() => s.leaving_for = None,
@@ -128,8 +147,11 @@ impl ProjectorSlots {
                 None => s.fade = (s.fade + amount).min(1.0),
             }
         }
+        while self.slots.len() > limit && self.slots.last().is_some_and(Option::is_none) {
+            self.slots.pop();
+        }
         // a map faded out goes to its successor, fading in
-        for k in 0..self.slots.len() {
+        for k in 0..limit.min(self.slots.len()) {
             let Some(Slot {
                 leaving_for: Some(next),
                 fade,
@@ -162,7 +184,7 @@ impl ProjectorSlots {
         for c in waiting {
             // a projector that appears has its shadow at once: light and
             // shadow come together
-            if let Some(free) = self.slots.iter_mut().find(|s| s.is_none()) {
+            if let Some(free) = self.slots.iter_mut().take(limit).find(|s| s.is_none()) {
                 *free = Some(Slot {
                     id: c.id,
                     idx: c.idx,
@@ -176,6 +198,7 @@ impl ProjectorSlots {
                 .slots
                 .iter()
                 .enumerate()
+                .take(limit)
                 .filter_map(|(k, s)| {
                     let s = s.as_ref().filter(|s| s.leaving_for.is_none())?;
                     Some((k, find(s.id).copied()?))
@@ -296,11 +319,55 @@ mod tests {
         let mut slots = ProjectorSlots::default();
         let mut a = emitter(1, 20.0, 1.0);
         a.idx = 17;
-        slots.update(&[a], 2, 0.1);
+        let other = emitter(3, 20.0, 1.0);
+        slots.update(&[a, other], 2, 0.1);
+        assert_eq!(map_of(&slots), [Some(id(1)), Some(id(3))]);
+        // in one frame: emitter 1 is gone, emitter 2 stands at its index
         let mut b = emitter(2, 20.0, 1.0);
         b.idx = 17;
-        slots.update(&[b], 2, 0.1);
-        assert_eq!(slots.assigned().collect::<Vec<_>>(), [(0, 17, 1.0)]);
+        slots.update(&[b, other], 2, 0.1);
+        assert_eq!(map_of(&slots), [Some(id(2)), Some(id(3))]);
+        assert_eq!(slots.assigned().collect::<Vec<_>>(), [(0, 17, 1.0), (1, 3, 1.0)]);
+        // both emitters again, the index of 2 changed: the map follows the id
+        let mut moved = b;
+        moved.idx = 40;
+        slots.update(&[moved, other], 2, 0.1);
+        assert_eq!(slots.assigned().collect::<Vec<_>>(), [(0, 40, 1.0), (1, 3, 1.0)]);
+    }
+
+    /// A candidate that leaves (out of the draw distance, derezzed) frees its
+    /// map at once and gets a map again when it returns, never the others'.
+    #[test]
+    fn a_candidate_that_leaves_and_returns_takes_a_free_map() {
+        let mut slots = ProjectorSlots::default();
+        let (a, b, c) = (emitter(1, 20.0, 1.0), emitter(2, 20.0, 1.0), emitter(3, 20.0, 1.0));
+        slots.update(&[a, b, c], 3, 0.1);
+        slots.update(&[a, c], 3, 0.1);
+        assert_eq!(map_of(&slots), [Some(id(1)), None, Some(id(3))]);
+        slots.update(&[a, b, c], 3, 0.1);
+        assert_eq!(map_of(&slots), [Some(id(1)), Some(id(2)), Some(id(3))]);
+        assert!(slots.assigned().all(|(_, _, f)| f == 1.0));
+    }
+
+    /// More projectors than maps: a camera that walks about inside one
+    /// distance band (distances change, bands and scores do not) changes
+    /// nothing.
+    #[test]
+    fn a_moving_eye_inside_one_band_keeps_the_owners() {
+        let mut slots = ProjectorSlots::default();
+        let build = |wobble: f32| -> Vec<Emitter> { (1..=5).map(|n| emitter(n, 17.0 + wobble * n as f32, 5.0)).collect() };
+        for _ in 0..10 {
+            slots.update(&build(0.0), 3, 0.1);
+        }
+        let reference = (map_of(&slots), slots.trace().1);
+        assert_eq!(reference.0, [Some(id(1)), Some(id(2)), Some(id(3))]);
+        let mut state = 11;
+        for _ in 0..300 {
+            // 16 to 32 m: one band whatever the wobble
+            let wobble = lcg(&mut state) * 2.5;
+            slots.update(&build(wobble), 3, 0.016);
+            assert_eq!((map_of(&slots), slots.trace().1), reference);
+        }
     }
 
     #[test]
@@ -371,8 +438,19 @@ mod tests {
         let mut slots = ProjectorSlots::default();
         let all: Vec<Emitter> = (1..=4).map(|n| emitter(n, 20.0, 5.0)).collect();
         slots.update(&all, 4, 0.1);
+        // the maps past the budget fade out first, and nobody takes them
         slots.update(&all, 2, 0.1);
+        assert_eq!(map_of(&slots), [Some(id(1)), Some(id(2)), Some(id(3)), Some(id(4))]);
+        let fades = slots.trace().1;
+        assert!(
+            fades[..2] == [1.0, 1.0] && fades[2..].iter().all(|f| (f - 0.8).abs() < 1e-6),
+            "{fades:?}"
+        );
+        for _ in 0..6 {
+            slots.update(&all, 2, 0.1);
+        }
         assert_eq!(map_of(&slots), [Some(id(1)), Some(id(2))]);
+        assert!(slots.assigned().all(|(_, _, f)| f == 1.0));
         slots.update(&all, 4, 0.1);
         assert_eq!(slots.assigned().count(), 4);
         assert!(slots.assigned().all(|(_, _, f)| f == 1.0));

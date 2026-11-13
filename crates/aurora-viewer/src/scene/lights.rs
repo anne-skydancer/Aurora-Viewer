@@ -19,7 +19,7 @@
 use super::projector_cache::{Emitter, intrinsic_score};
 use super::{CullView, Scene};
 use crate::world::World;
-use aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS;
+use aurora_render::projector_shadows::{MAX_PROJECTOR_MAPS, MAX_PROJECTOR_SHADOWS};
 use aurora_render::{PointLight, Projector, Renderer, SpotShadow};
 use glam::Vec3;
 use std::time::Instant;
@@ -143,6 +143,7 @@ impl Scene {
     ) -> (Vec<PointLight>, [Option<SpotShadow>; MAX_PROJECTOR_SHADOWS]) {
         let eye = view.eye;
         let now = Instant::now();
+        self.projector_shadows_on = view.projector_shadows && view.projector_shadow_limit > 0;
         let Scratch {
             mut lights,
             mut projecting,
@@ -247,7 +248,7 @@ impl Scene {
         // lights keeps its map, it just shows nothing meanwhile
         let mut shadows = [None; MAX_PROJECTOR_SHADOWS];
         if view.projector_shadows {
-            let limit = usize::from(view.projector_shadow_limit).min(MAX_PROJECTOR_SHADOWS);
+            let limit = usize::from(view.projector_shadow_limit).min(MAX_PROJECTOR_MAPS);
             self.spot_shadows.update(&emitters, limit, view.dt);
             for (k, idx, fade) in self.spot_shadows.assigned() {
                 if let Some(light) = lights.iter().position(|c| c.idx == idx && c.light.projector.is_some()) {

@@ -7925,7 +7925,22 @@ impl Backend {
         // projector shadow maps of the frame (none without shadows)
         let shelter_map = self.rain_shelter_map(f);
         let spot_views = spot_shadow_views(f, self.shadow_count as usize, shelter_map);
-        let spot_vp: [Option<Mat4>; SPOT_SHADOWS] = spot_views.map(|v| v.map(|(_, m)| m));
+        let mut spot_vp: [Option<Mat4>; SPOT_SHADOWS] = spot_views.map(|v| v.map(|(_, m)| m));
+        // a projector's map is drawn only if the main view could see its
+        // beam (nothing else shades projector light: reflections, probe
+        // faces and impostor pictures draw none). The slot stays the
+        // projector's, the camera takes no part in who has one; a pure
+        // saving of work, no pixel changes (RTR4 section 7.4.1: culling by
+        // what the receivers can see).
+        let seen = crate::gpu_cull::view_planes(unjittered_vp).map(|p| p.to_array());
+        for (k, view) in spot_views.iter().enumerate() {
+            let beam = view.and_then(|(s, _)| f.lights.get(s.light as usize)).and_then(|l| l.projector);
+            if let Some(p) = beam
+                && !crate::gpu_cull::sphere_in(&seen, Vec3::new(p.bound[0], p.bound[1], p.bound[2]), p.bound[3])
+            {
+                spot_vp[k] = None;
+            }
+        }
         let spot_info = spot_cull_info(f, &spot_views, self.shadow_size / 2);
         for (i, m) in cascades.iter().copied().map(Some).chain(spot_vp).enumerate() {
             let Some(m) = m else { continue };
@@ -8170,7 +8185,13 @@ impl Backend {
             } else {
                 spot_lists[k].extend(lists.spot_casters.iter().filter(inside).filter(resolves).map(|c| c.cmd));
             }
-            spot_terrain_lists[k].extend(lists.terrain_shadow_casters.iter().filter(inside).map(|c| c.cmd));
+            // (the shelter map keeps the camera's terrain)
+            let terrain = if shelter_map == Some(k) {
+                &lists.terrain_shadow_casters
+            } else {
+                &lists.spot_terrain_casters
+            };
+            spot_terrain_lists[k].extend(terrain.iter().filter(inside).map(|c| c.cmd));
         }
 
         // ---- indirect args

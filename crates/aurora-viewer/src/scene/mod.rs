@@ -611,7 +611,7 @@ struct CullCtx<'a> {
     shadows: bool,
     reflections: bool,
     /// Objects may cast into the projectors' shadow maps (the sun's shadows
-    /// are on and the scene has a light): `ObjVis::spot_casts`, which the
+    /// and the projectors' are on and the scene has a projector): `ObjVis::spot_casts`, which the
     /// camera's reach does not limit.
     spot_casts: bool,
     /// The CPU lists are built: the rain's shelter map takes what stands
@@ -636,7 +636,7 @@ struct ObjVis {
     /// camera's draw distance, shadow distance and small object culling do
     /// not apply, a projector's shadow is the projector's.
     spot_casts: bool,
-    /// Passed the camera's tests (the object's textures, blend order and
+    /// Passed the camera's tests (the texture usage, blend order and
     /// selection are the camera's business, not only a projector's).
     seen: bool,
 }
@@ -1020,6 +1020,12 @@ pub struct Scene {
     /// these instead of every object each frame. May hold removed indices;
     /// readers check the object again.
     pub light_objects: std::collections::BTreeSet<usize>,
+    /// The ones of them that project a texture (a projector may cast a
+    /// shadow); same upkeep and caveat as `light_objects`.
+    projector_objects: std::collections::BTreeSet<usize>,
+    /// Projectors cast shadows (the setting, a nonzero budget, the sun's
+    /// shadows on), as of the last light list (`lights.rs`).
+    projector_shadows_on: bool,
     /// Texture each projector of the frame's light list holds (object
     /// index: texture, slot), see `lights.rs`.
     light_textures: HashMap<usize, (Uuid, u32)>,
@@ -1688,6 +1694,8 @@ impl Scene {
             bom_stale: Default::default(),
             list_index: Default::default(),
             light_objects: Default::default(),
+            projector_objects: Default::default(),
+            projector_shadows_on: false,
             light_textures: HashMap::new(),
             light_scratch: Default::default(),
             spot_shadows: Default::default(),
@@ -3425,6 +3433,17 @@ impl Scene {
 
     /// Keep `light_objects` in step with an object's light parameters.
     fn note_light(&mut self, world: &World, idx: usize) {
+        let projector = world
+            .objects
+            .get(idx)
+            .is_some_and(|o| o.extra.light.is_some() && o.visual_light_image().is_some_and(|i| !i.texture.is_nil()));
+        if projector != self.projector_objects.contains(&idx) {
+            if projector {
+                self.projector_objects.insert(idx);
+            } else {
+                self.projector_objects.remove(&idx);
+            }
+        }
         let light = world.objects.get(idx).is_some_and(|o| o.extra.light.is_some());
         if let Some(g) = self.gpu.get_mut(idx)
             && g.is_light != light
@@ -4745,10 +4764,28 @@ impl Scene {
         // terrain (none while the Surface Patch rendering type is hidden:
         // not drawn, casting no shadow, in no reflection)
         let terrain_regions = if self.hidden_types.terrain { None } else { Some(&self.regions) };
+        // a projector's shadow map takes the terrain in its beam, near the
+        // camera or not
+        let spot_terrain = shadows && self.projector_shadows_on && !self.projector_objects.is_empty();
         for (&handle, r) in terrain_regions.into_iter().flatten() {
             for c in r.chunks.values() {
                 let center = c.world_center(r.offset);
-                if (center - view.eye).length() - c.radius > dd * 1.5 {
+                let near = (center - view.eye).length() - c.radius <= dd * 1.5;
+                if spot_terrain {
+                    self.lists.spot_terrain_casters.push(ShadowCaster {
+                        cmd: DrawCmd {
+                            index_count: c.alloc.index_count,
+                            first_index: c.alloc.index_offset,
+                            base_vertex: c.alloc.vertex_offset as i32,
+                            record: c.record,
+                            bounds: [0.0; 4],
+                        },
+                        center,
+                        radius: c.radius,
+                        alpha: r.surface.masked,
+                    });
+                }
+                if !near {
                     continue;
                 }
                 let cmd = DrawCmd {
@@ -4992,7 +5029,7 @@ impl Scene {
             reflection_distance: refl_dist,
             shadows,
             reflections,
-            spot_casts: full && shadows && !self.light_objects.is_empty(),
+            spot_casts: full && shadows && self.projector_shadows_on && !self.projector_objects.is_empty(),
             shelter: full,
         };
 
@@ -8103,5 +8140,50 @@ mod tests {
             "the scene exercises the tests ({drawn} drawn, {casting} casting)"
         );
         assert!(spotted > 50, "the projector map takes casters ({spotted})");
+    }
+
+    /// The CPU lists give a projector's map the same casters wherever the
+    /// camera stands or looks: far, tiny, behind it, all of them.
+    #[test]
+    fn the_cpu_spot_casters_do_not_depend_on_the_camera() {
+        let passes = [Pass::Opaque, Pass::Mask, Pass::Blend];
+        let mut gpu: Vec<ObjGpu> = (0..60).map(|_| ObjGpu::default()).collect();
+        for (i, g) in gpu.iter_mut().enumerate() {
+            g.center = Vec3::new(i as f32 * 7.0 - 200.0, (i % 5) as f32 * 40.0, (i % 3) as f32 * 10.0);
+            // from a speck to a house
+            g.radius = 0.001 + (i % 7) as f32 * 3.0;
+            g.faces = vec![test_face(passes[i % 3], false)];
+        }
+        let fov = 1.0f32;
+        let proj = glam::camera::rh::proj::directx::perspective_infinite_reverse(fov, 16.0 / 9.0, 0.1);
+        let casters = |eye: Vec3, forward: Vec3| -> Vec<(usize, bool)> {
+            let view_m = glam::camera::rh::view::look_to_mat4(eye, forward, Vec3::Z);
+            let view = CullView::new(proj * view_m, eye, 900.0, fov);
+            let ctx = CullCtx {
+                view: &view,
+                draw_distance: 64.0,
+                shadow_distance: 64.0,
+                reflection_distance: 32.0,
+                shadows: true,
+                reflections: true,
+                spot_casts: true,
+                shelter: false,
+            };
+            gpu.iter()
+                .enumerate()
+                .filter_map(|(i, g)| object_visibility(g, i, &ctx, |_| true, |_| false, |_| false).map(|v| (i, v.spot_casts)))
+                .collect()
+        };
+        let reference = casters(Vec3::ZERO, Vec3::X);
+        assert_eq!(reference.len(), 60, "every object may cast into a projector map");
+        assert!(reference.iter().all(|&(_, c)| c));
+        for (eye, forward) in [
+            (Vec3::new(300.0, 90.0, 40.0), Vec3::NEG_X),
+            (Vec3::new(-250.0, -80.0, 5.0), Vec3::Y),
+            (Vec3::new(10.0, 10.0, 900.0), Vec3::NEG_Z),
+            (Vec3::new(5.0, 0.0, 2.0), Vec3::new(1.0, 1.0, 0.2)),
+        ] {
+            assert_eq!(casters(eye, forward), reference, "from {eye} looking {forward}");
+        }
     }
 }

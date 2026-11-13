@@ -1434,7 +1434,7 @@ fn apply_test_overrides(settings: &mut Settings) {
     if let Ok(value) = std::env::var("AURORA_PROJECTOR_SHADOW_LIMIT")
         && let Ok(limit) = value.parse::<u8>()
     {
-        settings.projector_shadow_limit = limit.clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS as u8);
+        settings.projector_shadow_limit = limit.clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_MAPS as u8);
     }
     if let Ok(v) = std::env::var("AURORA_HDR") {
         settings.hdr_emissive = v != "0";

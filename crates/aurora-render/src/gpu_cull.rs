@@ -564,7 +564,14 @@ pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], 
     // frustum and what the beam resolves, `spot_resolves`), wherever the
     // camera is: a shadow does not change as the camera moves or turns.
     let beyond = d - r > frame.eye[3] && !is_avatar;
-    let spot_maps = fl & frame_flags::SHADOWS != 0 && fl & frame_flags::SPOT_ANY != 0;
+    // (the rain's shelter map is no projector's: it keeps the camera's rules)
+    let shelter_map = (frame.groups[3] as usize).min(SPOT_SHADOWS - 1);
+    let shelter_bit = if fl & frame_flags::SPOT_SHELTER != 0 {
+        frame_flags::SPOT << shelter_map
+    } else {
+        0
+    };
+    let spot_maps = fl & frame_flags::SHADOWS != 0 && fl & frame_flags::SPOT_ANY & !shelter_bit != 0;
     if beyond && !spot_maps {
         return (0, false);
     }
@@ -582,7 +589,6 @@ pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], 
         && sphere_in(&frame.probe, c, r);
     // the rain's shelter map: all of its square, blended faces too, shadows
     // or not (cull.wgsl)
-    let shelter_map = (frame.groups[3] as usize).min(SPOT_SHADOWS - 1);
     let shelters = !beyond
         && fl & frame_flags::SPOT_SHELTER != 0
         && fl & (frame_flags::SPOT << shelter_map) != 0
@@ -627,9 +633,17 @@ pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], 
     if spot_caster || shelters {
         let moves = o.flags & (object_flags::AVATAR | object_flags::RIGGED | object_flags::PHYSICAL) != 0 || o.avatar < n;
         for (k, planes) in frame.spots.iter().enumerate() {
-            let shelter = k == shelter_map && fl & frame_flags::SPOT_SHELTER != 0;
-            let takes = (spot_caster && spot_resolves(frame, k, c, r)) || shelter;
-            if takes && fl & (frame_flags::SPOT << k) != 0 && sphere_in(planes, c, r) && !(shelter && moves) {
+            if fl & (frame_flags::SPOT << k) == 0 {
+                continue;
+            }
+            // the shelter map takes what `shelters` kept (large, in its
+            // square) that stands still; a projector's, what its beam resolves
+            let takes = if shelter_bit >> 16 == 1 << k {
+                shelters && !moves
+            } else {
+                spot_caster && spot_resolves(frame, k, c, r)
+            };
+            if takes && sphere_in(planes, c, r) {
                 m |= 1 << (BIN_SPOT + k);
             }
         }
@@ -2002,6 +2016,61 @@ mod tests {
         assert_eq!(m & 0xf, 0);
         assert_eq!(m >> BIN_SHADOW & 7, 0);
         assert_eq!(m >> BIN_SHADOW_ALPHA & 7, 0);
+    }
+
+    /// The rain's shelter map is no projector's: the projector maps' rules
+    /// (a tiny or far caster is kept for them) never let a face into it.
+    #[test]
+    fn the_shelter_map_keeps_the_camera_rules_beside_the_projector_maps() {
+        let faces: Vec<CullFace> = (0..3)
+            .map(|i| CullFace {
+                index_count: 3,
+                first_index: 0,
+                base_vertex: 0,
+                object: i,
+                bits: FACE_FIRST | pass::OPAQUE,
+                _pad: [0; 3],
+            })
+            .collect();
+        let sphere = |p: [f32; 3], r: f32| CullObject {
+            sphere: [p[0], p[1], p[2], r],
+            flags: object_flags::ACTIVE,
+            ..CullObject::NONE
+        };
+        // a roof overhead, a tiny object (under 1.5 px), one past the 64 m
+        // of draw distance
+        let objects = [
+            sphere([10.0, 0.0, 0.0], 2.0),
+            sphere([10.0, 0.0, 0.0], 0.0001),
+            sphere([150.0, 0.0, 0.0], 2.0),
+        ];
+        let spheres: Vec<(Vec3, f32)> = objects
+            .iter()
+            .map(|o| (Vec3::new(o.sphere[0], o.sphere[1], o.sphere[2]), o.sphere[3]))
+            .collect();
+        let mut frame = spot_frame(Vec3::ZERO, Vec3::X);
+        frame.sizes[1] = 3;
+        // map 1 is the shelter's, over a wide square; map 0 a projector's
+        frame.spots[1] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0, 400.0],
+            [0.0, 1.0, 0.0, 200.0],
+            [0.0, -1.0, 0.0, 200.0],
+            [0.0, 0.0, 1.0, 200.0],
+            [0.0, 0.0, -1.0, 200.0],
+        ];
+        frame.sizes[3] |= frame_flags::SPOT_SHELTER | (frame_flags::SPOT << 1);
+        frame.groups[3] = 1;
+        let bit = |frame: &CullFrame, i: usize, k: usize| face_bins(frame, &faces, &objects, &spheres, i).0 >> (BIN_SPOT + k) & 1 == 1;
+        // with a projector map drawn too
+        assert!(bit(&frame, 0, 1), "the roof shelters");
+        assert!(!bit(&frame, 1, 1), "a tiny object does not");
+        assert!(!bit(&frame, 2, 1), "one past the draw distance does not");
+        // and with the shelter's map alone, shadows on
+        frame.sizes[3] &= !frame_flags::SPOT;
+        assert!(bit(&frame, 0, 1));
+        assert!(!bit(&frame, 1, 1));
+        assert!(!bit(&frame, 2, 1));
     }
 
     #[test]

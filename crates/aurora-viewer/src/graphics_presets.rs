@@ -193,7 +193,7 @@ impl Preset {
                 max_particles: 4096,
                 shadow_quality: 2,
                 projector_shadows: false,
-                projector_shadow_limit: 16,
+                projector_shadow_limit: 15,
                 ssao: 1,
                 ao_method: 1,
                 gtao_quality: 2,
@@ -232,7 +232,7 @@ impl Preset {
                 max_particles: 8192,
                 shadow_quality: 4,
                 projector_shadows: true,
-                projector_shadow_limit: 16,
+                projector_shadow_limit: 15,
                 ssao: 2,
                 ao_method: 1,
                 gtao_quality: 3,
@@ -840,7 +840,7 @@ impl Values {
         s.projector_shadows = self.projector_shadows;
         s.projector_shadow_limit = self
             .projector_shadow_limit
-            .clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS as u8);
+            .clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_MAPS as u8);
         s.ssao = self.ssao;
         s.ao_method = self.ao_method;
         s.gtao_quality = self.gtao_quality;
@@ -869,12 +869,12 @@ impl Values {
 
 #[cfg(test)]
 mod tests {
-    /// The projectors' shadow budget of a level, 4 / 8 / 16 / 16 from Low to
-    /// Deluxe (16 maps are the cap of the culling's bins). The slider stays
+    /// The projectors' shadow budget of a level, 4 / 8 / 15 / 15 from Low to
+    /// Deluxe (15 projectors: the 16th map is the rain shelter's). The slider stays
     /// the user's.
     #[test]
     fn the_levels_set_the_projector_shadow_budget() {
-        for (preset, limit) in [(Preset::Low, 4), (Preset::Medium, 8), (Preset::High, 16), (Preset::Deluxe, 16)] {
+        for (preset, limit) in [(Preset::Low, 4), (Preset::Medium, 8), (Preset::High, 15), (Preset::Deluxe, 15)] {
             let mut s = Settings::default();
             preset.apply(&mut s);
             assert_eq!(s.projector_shadow_limit, limit, "{preset:?}");

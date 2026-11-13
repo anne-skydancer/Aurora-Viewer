@@ -403,7 +403,10 @@ fn face_mask(i: u32) -> u32 {
     // frustum and what the beam resolves, spot_resolves), wherever the
     // camera is: a shadow does not change as the camera moves or turns.
     let beyond = d - r > frame.eye.w && !is_avatar;
-    let spot_maps = (fl & F_SHADOWS) != 0u && (fl & F_SPOT_ANY) != 0u;
+    // (the rain's shelter map is no projector's: it keeps the camera's rules)
+    let shelter_map = min(frame.groups.w, 15u);
+    let shelter_bit = select(0u, F_SPOT << shelter_map, (fl & F_SPOT_SHELTER) != 0u);
+    let spot_maps = (fl & F_SHADOWS) != 0u && (fl & F_SPOT_ANY & ~shelter_bit) != 0u;
     if (beyond && !spot_maps) {
         return 0u;
     }
@@ -417,7 +420,6 @@ fn face_mask(i: u32) -> u32 {
     // the rain's shelter map takes all of its square, however far the
     // shadows reach (a roof beyond them would leave the floor under it
     // open to the rain, cut at the seams between a building's meshes)
-    let shelter_map = min(frame.groups.w, 15u);
     var shelters = !beyond && (fl & F_SPOT_SHELTER) != 0u && (fl & (F_SPOT << shelter_map)) != 0u && spot_in(shelter_map, c, r);
     if (!viewed && !shadow_reach && !reflect_reach && !captured && !shelters && !spot_maps) {
         return 0u;
@@ -486,9 +488,18 @@ fn face_mask(i: u32) -> u32 {
         // would settle on it at once, as deep as on the ground)
         let moves = (o.flags & (OBJ_AVATAR | OBJ_RIGGED | OBJ_PHYSICAL)) != 0u || o.avatar < n;
         for (var k = 0u; k < 16u; k++) {
-            let shelter = k == shelter_map && (fl & F_SPOT_SHELTER) != 0u;
-            let takes = (spot_caster && spot_resolves(k, c, r)) || shelter;
-            if (takes && (fl & (F_SPOT << k)) != 0u && spot_in(k, c, r) && !(shelter && moves)) {
+            if ((fl & (F_SPOT << k)) == 0u) {
+                continue;
+            }
+            // the shelter map takes what `shelters` kept (large, in its
+            // square) that stands still; a projector's, what its beam resolves
+            var takes = false;
+            if ((shelter_bit >> 16u) == (1u << k)) {
+                takes = shelters && !moves;
+            } else {
+                takes = spot_caster && spot_resolves(k, c, r);
+            }
+            if (takes && spot_in(k, c, r)) {
                 m |= 1u << (BIN_SPOT + k);
             }
         }

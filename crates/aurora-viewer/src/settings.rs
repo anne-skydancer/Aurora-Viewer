@@ -3274,7 +3274,7 @@ impl Settings {
         self.shadow_quality = self.shadow_quality.min(4);
         self.projector_shadow_limit = self
             .projector_shadow_limit
-            .clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS as u8);
+            .clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_MAPS as u8);
         self.antialiasing = self.antialiasing.min(7);
         self.fsr_quality = self.fsr_quality.min(4);
         self.fsr_sharpness = self.fsr_sharpness.min(100);
@@ -3830,7 +3830,7 @@ mod tests {
         use super::Settings;
         let old: Settings = serde_json::from_str("{}").expect("old preferences");
         assert_eq!(old.projector_shadow_limit, 2);
-        for (requested, expected) in [(0, 1), (2, 2), (10, 10), (255, 16)] {
+        for (requested, expected) in [(0, 1), (2, 2), (10, 10), (255, 15)] {
             let settings = Settings {
                 projector_shadow_limit: requested,
                 ..Settings::default()

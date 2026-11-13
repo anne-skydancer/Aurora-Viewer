@@ -165,7 +165,7 @@ Actual grid login and teleporting are performed by the human.
 | `AURORA_EMOJI_FONT=<path>` | Uses another emoji font than the built-in one (PNG bitmaps: CBDT or sbix) |
 | `AURORA_MAX_AVATARS`, `AURORA_MAX_COMPLEXITY`, `AURORA_AA`, `AURORA_SHADOWS`, `AURORA_PROJECTOR_SHADOWS` | Override these settings |
 | `AURORA_LOCAL_LIGHTS=0..64` | Overrides "Maximum nearby lights" (Graphics › Light) |
-| `AURORA_PROJECTOR_SHADOW_LIMIT=1..16` | Override the projector shadow budget (default 2) |
+| `AURORA_PROJECTOR_SHADOW_LIMIT=1..15` | Override the projector shadow budget (the graphics levels set 4, 8, 15 and 15 from Low to Deluxe; the 16th map is the rain shelter's) |
 | `AURORA_HDR=0\|1` | Overrides "HDR and Emissive" (Graphics › Image) |
 | `AURORA_GRAPHICS_PRESET=potato\|low\|medium\|high\|deluxe` | Applies a graphics level before the overrides above |
 
@@ -4665,7 +4665,7 @@ both open states and the selection count. Capture at frame 620.
   only their shadows change. `AURORA_DEMO_ALTITUDE=807` places the floor
   near 839 m. A projector's light and shadow change only when the projector
   or something in its beam moves, never when the camera moves or turns:
-  with a budget of 15 or more (`AURORA_PROJECTOR_SHADOW_LIMIT=15`) every
+  with the budget of 15, the most there is (`AURORA_PROJECTOR_SHADOW_LIMIT=15`) every
   projector of the cluster has its map for the whole orbit, so the shadows
   do not change as the camera circles, and with `AURORA_PROJECTOR_TRACE=1`
   the `slots` and `fade` of the trace stay the same on every line. With a
@@ -4676,7 +4676,7 @@ both open states and the selection count. Capture at frame 620.
   two ends of the orbit (frames well after 700): the view differs, the
   shadows on the floor do not. `cluster-bench` keeps the fixed camera and
   exits after 50 seconds. For a same-quality budget A/B, use
-  `AURORA_PROJECTOR_SHADOW_LIMIT=2` then `10`, `AURORA_PROFILE=1`, disabled
+  `AURORA_PROJECTOR_SHADOW_LIMIT=2` then `15`, `AURORA_PROFILE=1`, disabled
   vertical sync and the same resolution and preset. Discard the first
   15 seconds for loading and warm-up; compare seconds 15–45. Check the
   `projector shadow maps active` log for actual occupancy, and the
