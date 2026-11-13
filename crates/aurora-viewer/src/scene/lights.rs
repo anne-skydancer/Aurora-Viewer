@@ -258,7 +258,7 @@ impl Scene {
                 let (ids, fades) = self.spot_shadows.trace();
                 let slots: Vec<String> = ids
                     .iter()
-                    .map(|id| id.map_or("-".into(), |id| id.simple().to_string()[..8].to_string()))
+                    .map(|id| id.map_or("-".into(), |id| id.simple().to_string()[24..].to_string()))
                     .collect();
                 log::info!(
                     "projector trace: eye={eye:?} emitters={} slots={slots:?} fade={fades:?}",

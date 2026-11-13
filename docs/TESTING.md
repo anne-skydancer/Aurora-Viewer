@@ -11739,7 +11739,7 @@ What the inventory must show with these scenarios:
   2 a glow starts around the foot of objects, at 4 it is grainy).
 - **`AURORA_PROJECTOR_TRACE=1`**: writes `projector trace:` lines with the
   camera position, the number of projectors that may hold a shadow map, the
-  shadow-map owners (the first eight digits of each projector's id, `-` for
+  shadow-map owners (the last eight digits of each projector's id, `-` for
   a free map) and their fade values. Neither depends on the camera as long
   as no projector comes or goes. It requires an info
   log filter (`RUST_LOG=warn,aurora_viewer::scene::lights=info` is enough).
