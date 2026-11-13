@@ -54,6 +54,7 @@ pub mod picking;
 mod plants;
 pub mod portals;
 pub mod probes;
+pub mod projector_cache;
 mod rain_ground;
 pub mod rain_sound;
 pub mod render_types;
@@ -609,6 +610,10 @@ struct CullCtx<'a> {
     reflection_distance: f32,
     shadows: bool,
     reflections: bool,
+    /// Objects may cast into the projectors' shadow maps (the sun's shadows
+    /// are on and the scene has a light): `ObjVis::spot_casts`, which the
+    /// camera's reach does not limit.
+    spot_casts: bool,
     /// The CPU lists are built: the rain's shelter map takes what stands
     /// still in its square, shadows or not (`DrawLists::shelter_casters`).
     shelter: bool,
@@ -627,6 +632,13 @@ struct ObjVis {
     probes: bool,
     /// In the rain's shelter map (`CullCtx::shelter`).
     shelters: bool,
+    /// May cast into a projector's shadow map (`CullCtx::spot_casts`): the
+    /// camera's draw distance, shadow distance and small object culling do
+    /// not apply, a projector's shadow is the projector's.
+    spot_casts: bool,
+    /// Passed the camera's tests (the object's textures, blend order and
+    /// selection are the camera's business, not only a projector's).
+    seen: bool,
 }
 
 /// Object tests of the CPU lists, the same as `face_mask` in cull.wgsl:
@@ -658,8 +670,20 @@ fn object_visibility(
     }
     let (sc, sr) = g.sphere();
     let d = (sc - ctx.view.eye).length();
-    if d - sr > ctx.draw_distance && !g.is_avatar {
-        return None;
+    // (beyond the draw distance only a projector's shadow map may want it)
+    let beyond = d - sr > ctx.draw_distance && !g.is_avatar;
+    let spot = ObjVis {
+        sphere: (sc, sr),
+        in_view: false,
+        casts: false,
+        reflects: false,
+        probes: false,
+        shelters: false,
+        spot_casts: ctx.spot_casts,
+        seen: false,
+    };
+    if beyond {
+        return ctx.spot_casts.then_some(spot);
     }
     let in_view = ctx.view.sphere_visible(sc, sr);
     let casts = ctx.shadows && d - sr < ctx.shadow_distance;
@@ -676,20 +700,21 @@ fn object_visibility(
         && avatar.is_none()
         && (sc - ctx.view.eye).abs().cmple(half).all();
     if !in_view && !casts && !reflects && !probes && !shelters {
-        return None;
+        return ctx.spot_casts.then_some(spot);
     }
     // tiny objects far away are culled (LL-like small object culling)
     let large = ctx.view.pixel_size(sc, sr) >= 1.5 || g.is_avatar;
     if !large && !probes {
-        return None;
+        return ctx.spot_casts.then_some(spot);
     }
     Some(ObjVis {
-        sphere: (sc, sr),
         in_view: in_view && large,
         casts: casts && large,
         reflects: reflects && large,
         probes,
         shelters: shelters && large,
+        seen: true,
+        ..spot
     })
 }
 
@@ -1002,7 +1027,7 @@ pub struct Scene {
     /// built in their room instead of new ones each frame (`lights.rs`).
     light_scratch: lights::Scratch,
     /// The projectors that cast shadows (`lights.rs`).
-    spot_shadows: lights::SpotShadowSlots,
+    spot_shadows: projector_cache::ProjectorSlots,
     /// Rain prototype: the terrain's heights around the camera
     /// (`rain_ground.rs`).
     rain_ground: rain_ground::RainGroundCache,
@@ -4967,6 +4992,7 @@ impl Scene {
             reflection_distance: refl_dist,
             shadows,
             reflections,
+            spot_casts: full && shadows && !self.light_objects.is_empty(),
             shelter: full,
         };
 
@@ -5010,6 +5036,7 @@ impl Scene {
             debug_green: Vec<DrawCmd>,
             debug_yellow: Vec<DrawCmd>,
             casters: Vec<ShadowCaster>,
+            spot: Vec<ShadowCaster>,
             shelter: Vec<ShadowCaster>,
             refl: Vec<ShadowCaster>,
             probe: Vec<ShadowCaster>,
@@ -5037,6 +5064,7 @@ impl Scene {
             debug_green: Vec::new(),
             debug_yellow: Vec::new(),
             casters: Vec::new(),
+            spot: Vec::new(),
             shelter: Vec::new(),
             refl: Vec::new(),
             probe: Vec::new(),
@@ -5107,6 +5135,8 @@ impl Scene {
                 reflects,
                 probes,
                 shelters,
+                spot_casts,
+                seen,
             }) = object_visibility(
                 g,
                 idx,
@@ -5225,6 +5255,16 @@ impl Scene {
                             alpha: pass.record_flags() != 0,
                         });
                     }
+                    // the projectors' shadow maps: the same faces as the sun's,
+                    // whatever the camera reaches (`ObjVis::spot_casts`)
+                    if spot_casts && (pass != Pass::Blend || g.rigged || g.is_avatar || blend_casts) {
+                        l.spot.push(ShadowCaster {
+                            cmd,
+                            center: sc,
+                            radius: sr,
+                            alpha: pass.record_flags() != 0,
+                        });
+                    }
                     // the rain's shelter map: blended faces too (glass keeps
                     // the rain off as well as tiles)
                     if shelters {
@@ -5250,7 +5290,7 @@ impl Scene {
                         }
                     }
                 }
-                if usage {
+                if usage && seen {
                     // (out of view too: what memory pressure may not
                     // lower a texture under, see `note_usage_away`)
                     note_face_usage(&mut l.usage, f, px, in_view);
@@ -5319,6 +5359,7 @@ impl Scene {
             a.part_faces.append(&mut b.part_faces);
             a.part_skinned += b.part_skinned;
             a.casters.append(&mut b.casters);
+            a.spot.append(&mut b.spot);
             a.shelter.append(&mut b.shelter);
             a.refl.append(&mut b.refl);
             a.probe.append(&mut b.probe);
@@ -5381,6 +5422,7 @@ impl Scene {
         self.lists.blend_glow.extend(self.blend_tmp.iter().map(|e| e.glow));
         self.lists.blend_double_sided.extend(self.blend_tmp.iter().map(|e| e.double_sided));
         self.lists.shadow_casters.extend(result.casters);
+        self.lists.spot_casters.extend(result.spot);
         self.lists.shelter_casters.extend(result.shelter);
         self.lists.reflection = result.refl;
         self.lists.probe = result.probe;
@@ -7885,7 +7927,9 @@ mod tests {
     /// and visible objects.
     #[test]
     fn gpu_culling_matches_the_cpu_lists() {
-        use aurora_render::gpu_cull::{BIN_PROBE, BIN_REFL_WATER, BIN_SHADOW, BIN_SHADOW_ALPHA, CullFrame, face_bins, frame_flags};
+        use aurora_render::gpu_cull::{
+            BIN_PROBE, BIN_REFL_WATER, BIN_SHADOW, BIN_SHADOW_ALPHA, BIN_SPOT, CullFrame, face_bins, frame_flags,
+        };
         let mut seed = 0x853c_49e6_748f_ea9bu64;
         let mut rand = move |n: u32| {
             seed ^= seed << 13;
@@ -7962,6 +8006,7 @@ mod tests {
             reflection_distance: 64.0,
             shadows: true,
             reflections: true,
+            spot_casts: true,
             shelter: false,
         };
         let gview = GpuCullView {
@@ -7985,10 +8030,15 @@ mod tests {
             &[aurora_render::shadow_cull::CASTER_PLANES_ALL; 3],
             0.0,
             [Mat4::IDENTITY; 3],
-            [None; aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS],
+            // a projector map that holds everything in its frustum: what
+            // is left out of it is the beam's resolution test alone
+            std::array::from_fn(|k| (k == 0).then_some(all)),
             None,
             flags,
         );
+        // apex, near plane distance and texels per metre of beam at one metre
+        frame.spot_apex[0] = (eye + Vec3::new(5.0, 5.0, 5.0)).extend(0.1).to_array();
+        frame.spot_scale[0] = [150.0, 0.0, 0.0, 0.0];
         frame.water = [[0.0, 0.0, 0.0, 1.0]; 6];
         frame.probe = frame.water;
         frame.probe_eye = [0.0, 0.0, 0.0, 1e9];
@@ -8003,7 +8053,7 @@ mod tests {
                 owner.push((i, fi));
             }
         }
-        let (mut drawn, mut casting) = (0, 0);
+        let (mut drawn, mut casting, mut spotted) = (0, 0, 0);
         for (k, &(i, fi)) in owner.iter().enumerate() {
             let g = &gpu[i];
             let f = &g.faces[fi];
@@ -8035,6 +8085,16 @@ mod tests {
             assert_eq!(m >> BIN_REFL_WATER & 1 == 1, refl, "reflection, object {i}");
             assert_eq!(m >> BIN_PROBE & 1 == 1, probe, "probe, object {i}");
             assert_eq!(visible, in_view && fi == 0, "visible object {i}");
+            // a projector's map: the caster rules of the sun's, without the
+            // camera's reach (draw and shadow distance, small objects), the
+            // beam's own resolution instead
+            // (the frame has BLEND_CASTS: blended faces cast too)
+            let spot_rules = f.pass != Pass::Hidden;
+            let (sc, sr) = g.sphere();
+            let resolves = aurora_render::gpu_cull::spot_resolves_at(frame.spot_apex[0], frame.spot_scale[0][0], sc, sr);
+            let spot = vis.as_ref().is_some_and(|v| v.spot_casts) && spot_rules && resolves;
+            assert_eq!(m >> BIN_SPOT & 1 == 1, spot, "projector map, object {i}");
+            spotted += spot as u32;
             drawn += main as u32;
             casting += casts as u32;
         }
@@ -8042,5 +8102,6 @@ mod tests {
             drawn > 50 && casting > 100,
             "the scene exercises the tests ({drawn} drawn, {casting} casting)"
         );
+        assert!(spotted > 50, "the projector map takes casters ({spotted})");
     }
 }

@@ -175,6 +175,8 @@ pub mod frame_flags {
     pub const PROBE_SHADOW: u32 = 256;
     /// Projector shadow map 0 is drawn (map 1: the next bit).
     pub const SPOT: u32 = 1 << 16;
+    /// Any projector shadow map is drawn.
+    pub const SPOT_ANY: u32 = 0xffff_0000;
     /// Exterior refraction shares the water bin, with a union of frustums.
     pub const WATER_AIR: u32 = 1024;
     /// Blended faces that are not rigged cast too
@@ -384,6 +386,13 @@ pub struct CullFrame {
     pub probe_eye: [f32; 4],
     /// Frustums of the projector shadow maps (`frame_flags::SPOT`).
     pub spots: [[[f32; 4]; 6]; SPOT_SHADOWS],
+    /// Per projector shadow map: the apex of its frustum, and the nearest
+    /// distance from it a caster is measured at (the map's near plane).
+    pub spot_apex: [[f32; 4]; SPOT_SHADOWS],
+    /// Per projector shadow map: x, texels across one metre of beam at one
+    /// metre (`map pixels / tan(half the field of view)`), 0 for a map that
+    /// is no projector's (`spot_resolves`).
+    pub spot_scale: [[f32; 4]; SPOT_SHADOWS],
     pub cascades: [[[f32; 4]; 4]; 3],
     /// Shadow map of the probe being captured (`frame_flags::PROBE_SHADOW`).
     pub probe_shadow: [[f32; 4]; 4],
@@ -447,6 +456,8 @@ impl CullFrame {
             // (a depth of 0 to 1: the fifth plane is the far one, and
             // nothing is left out for being before the near one)
             spots: spots.map(|s| planes(s.unwrap_or(Mat4::IDENTITY))),
+            spot_apex: [[0.0; 4]; SPOT_SHADOWS],
+            spot_scale: [[0.0; 4]; SPOT_SHADOWS],
             cascades: cascades.map(|m| m.to_cols_array_2d()),
             probe_shadow: probe_shadow.unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
             shadow_planes: *shadow_planes,
@@ -503,6 +514,22 @@ pub fn in_cascade(m: &Mat4, c: Vec3, r: f32) -> bool {
     !(p.x + rr < -1.0 || p.x - rr > 1.0 || p.y + rr < -1.0 || p.y - rr > 1.0 || p.z - rr > 1.0)
 }
 
+/// Whether a caster's sphere covers at least one texel of a projector's
+/// shadow map: `r x map pixels / (distance x tan(fov / 2))`, the distance
+/// taken from the apex and at least the map's near plane. It depends on the
+/// projector and the caster alone, never on the camera: the caster of a
+/// beam is the same wherever the camera stands (kept line for line with
+/// `spot_resolves` in cull.wgsl).
+pub fn spot_resolves(frame: &CullFrame, k: usize, c: Vec3, r: f32) -> bool {
+    spot_resolves_at(frame.spot_apex[k], frame.spot_scale[k][0], c, r)
+}
+
+/// `spot_resolves` for a map's `CullFrame::spot_apex` and `scale`.
+pub fn spot_resolves_at(apex: [f32; 4], scale: f32, c: Vec3, r: f32) -> bool {
+    let dist = (c - Vec3::new(apex[0], apex[1], apex[2])).length().max(apex[3]);
+    r * scale / dist >= 1.0
+}
+
 /// Reference of `face_mask` in cull.wgsl (kept line for line): the bins of
 /// face `i`, and whether it counts as a visible object. `spheres`: the
 /// world sphere of each object (`world_spheres`).
@@ -531,16 +558,24 @@ pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], 
     }
     let (c, r) = spheres[f.object as usize];
     let d = (c - Vec3::new(frame.eye[0], frame.eye[1], frame.eye[2])).length();
-    if d - r > frame.eye[3] && !is_avatar {
+    let fl = frame.sizes[3];
+    // Beyond the draw distance nothing of the camera's is drawn. The
+    // projector maps take their casters from the projector alone (its
+    // frustum and what the beam resolves, `spot_resolves`), wherever the
+    // camera is: a shadow does not change as the camera moves or turns.
+    let beyond = d - r > frame.eye[3] && !is_avatar;
+    let spot_maps = fl & frame_flags::SHADOWS != 0 && fl & frame_flags::SPOT_ANY != 0;
+    if beyond && !spot_maps {
         return (0, false);
     }
-    let fl = frame.sizes[3];
-    let viewed = sphere_in(&frame.planes, c, r)
+    let viewed = !beyond
+        && sphere_in(&frame.planes, c, r)
         && !(own_first_person && (o.flags & object_flags::FIRST_PERSON_HIDDEN != 0 || f.bits & FACE_FIRST_PERSON_HIDDEN != 0));
-    let shadow_reach = fl & frame_flags::SHADOWS != 0 && d - r < frame.dist[0];
-    let reflect_reach = fl & frame_flags::REFLECTIONS != 0 && d - r < frame.dist[1];
+    let shadow_reach = !beyond && fl & frame_flags::SHADOWS != 0 && d - r < frame.dist[0];
+    let reflect_reach = !beyond && fl & frame_flags::REFLECTIONS != 0 && d - r < frame.dist[1];
     // a capture measures from its probe, not from the camera
-    let captured = fl & frame_flags::REFLECTIONS != 0
+    let captured = !beyond
+        && fl & frame_flags::REFLECTIONS != 0
         && fl & frame_flags::PROBE != 0
         && o.flags & object_flags::NO_PROBE == 0
         && (c - Vec3::new(frame.probe_eye[0], frame.probe_eye[1], frame.probe_eye[2])).length() - r < frame.probe_eye[3]
@@ -548,14 +583,18 @@ pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], 
     // the rain's shelter map: all of its square, blended faces too, shadows
     // or not (cull.wgsl)
     let shelter_map = (frame.groups[3] as usize).min(SPOT_SHADOWS - 1);
-    let shelters =
-        fl & frame_flags::SPOT_SHELTER != 0 && fl & (frame_flags::SPOT << shelter_map) != 0 && sphere_in(&frame.spots[shelter_map], c, r);
-    if !viewed && !shadow_reach && !reflect_reach && !captured && !shelters {
+    let shelters = !beyond
+        && fl & frame_flags::SPOT_SHELTER != 0
+        && fl & (frame_flags::SPOT << shelter_map) != 0
+        && sphere_in(&frame.spots[shelter_map], c, r);
+    if !viewed && !shadow_reach && !reflect_reach && !captured && !shelters && !spot_maps {
         return (0, false);
     }
-    // small object culling is the camera's too
+    // small object culling is the camera's too (the projector maps have
+    // their own, `spot_resolves`)
     let large = r * frame.dist[2] / d.max(0.1) >= 1.5 || is_avatar;
-    if !large && !captured {
+    let shelters = shelters && (large || captured);
+    if !large && !captured && !spot_maps {
         return (0, false);
     }
     let (in_view, casts, reflects) = (viewed && large, shadow_reach && large, reflect_reach && large);
@@ -584,11 +623,13 @@ pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], 
             }
         }
     }
-    if caster || shelters {
+    let spot_caster = spot_maps && (p != pass::BLEND || rigged || fl & frame_flags::BLEND_CASTS != 0);
+    if spot_caster || shelters {
         let moves = o.flags & (object_flags::AVATAR | object_flags::RIGGED | object_flags::PHYSICAL) != 0 || o.avatar < n;
         for (k, planes) in frame.spots.iter().enumerate() {
             let shelter = k == shelter_map && fl & frame_flags::SPOT_SHELTER != 0;
-            if (caster || shelter) && fl & (frame_flags::SPOT << k) != 0 && sphere_in(planes, c, r) && !(shelter && moves) {
+            let takes = (spot_caster && spot_resolves(frame, k, c, r)) || shelter;
+            if takes && fl & (frame_flags::SPOT << k) != 0 && sphere_in(planes, c, r) && !(shelter && moves) {
                 m |= 1 << (BIN_SPOT + k);
             }
         }
@@ -1531,7 +1572,7 @@ mod tests {
         // the capture's origin; then 4 matrices, 3 x 12 shadow planes and 4 vectors.
         assert_eq!(
             std::mem::size_of::<CullFrame>(),
-            (5 + SPOT_SHADOWS) * 6 * 16 + 16 + 4 * 64 + 3 * SHADOW_PLANES * 16 + 4 * 16
+            (5 + SPOT_SHADOWS) * 6 * 16 + 16 + 2 * SPOT_SHADOWS * 16 + 4 * 64 + 3 * SHADOW_PLANES * 16 + 4 * 16
         );
         assert_eq!(
             wgsl_fields(src, "CullFrame"),
@@ -1543,6 +1584,8 @@ mod tests {
                 "probe",
                 "probe_eye",
                 "spots",
+                "spot_apex",
+                "spot_scale",
                 "cascades",
                 "probe_shadow",
                 "shadow_planes",
@@ -1649,7 +1692,7 @@ mod tests {
                 .trim_end_matches('u');
             v.parse().unwrap_or_else(|_| panic!("{name}: {v}"))
         };
-        let pairs: [(&str, u32); 51] = [
+        let pairs: [(&str, u32); 52] = [
             ("F_PROBE_SHADOW", frame_flags::PROBE_SHADOW),
             ("F_FIRST_PERSON", frame_flags::FIRST_PERSON),
             ("F_SHOW_SELF", frame_flags::SHOW_SELF),
@@ -1660,6 +1703,7 @@ mod tests {
             ("BIN_SHADOW_ALPHA", BIN_SHADOW_ALPHA as u32),
             ("BIN_SPOT", BIN_SPOT as u32),
             ("F_SPOT", frame_flags::SPOT),
+            ("F_SPOT_ANY", frame_flags::SPOT_ANY),
             ("COUNT_SHADOW", COUNT_SHADOW as u32),
             ("SHADOW_STATS", SHADOW_STATS as u32),
             ("SHADOW_PLANES", SHADOW_PLANES as u32),
@@ -1830,6 +1874,8 @@ mod tests {
             probe: planes,
             probe_eye: [0.0; 4],
             spots: [planes; SPOT_SHADOWS],
+            spot_apex: [[0.0; 4]; SPOT_SHADOWS],
+            spot_scale: [[0.0; 4]; SPOT_SHADOWS],
             cascades: [cascade.to_cols_array_2d(); 3],
             probe_shadow: cascade.to_cols_array_2d(),
             shadow_planes: [crate::shadow_cull::CASTER_PLANES_ALL; 3],
@@ -1838,6 +1884,141 @@ mod tests {
             sizes: [0, 4, 0, frame_flags::SHADOWS | frame_flags::REFLECTIONS | frame_flags::WATER],
             groups: [0; 4],
         }
+    }
+
+    /// A frame with projector map 0 drawn: a frustum of 90 degrees from
+    /// `apex` along +X, 1024 texel maps.
+    fn spot_frame(eye: Vec3, forward: Vec3) -> CullFrame {
+        let mut frame = frame_for_tests();
+        let view = glam::camera::rh::view::look_to_mat4(eye, forward, Vec3::Z);
+        let proj = glam::camera::rh::proj::directx::perspective_infinite_reverse(1.0, 1.5, 0.1);
+        frame.planes = view_planes(proj * view).map(|p| p.to_array());
+        frame.eye = [eye.x, eye.y, eye.z, 64.0];
+        // the beam: a box of planes 60 m long and 40 m wide around +X
+        let beam: [[f32; 4]; 6] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0, 60.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, -1.0, 0.0, 20.0],
+            [0.0, 0.0, 1.0, 20.0],
+            [0.0, 0.0, -1.0, 20.0],
+        ];
+        frame.spots[0] = beam;
+        frame.spot_apex[0] = [0.0, 0.0, 0.0, 0.1];
+        // map pixels over tan(half the field of view): 1024 / tan(45 deg)
+        frame.spot_scale[0] = [1024.0, 0.0, 0.0, 0.0];
+        frame.sizes[3] |= frame_flags::SPOT;
+        frame
+    }
+
+    fn spot_bit(frame: &CullFrame, objects: &[CullObject], spheres: &[(Vec3, f32)], faces: &[CullFace], i: usize) -> bool {
+        face_bins(frame, faces, objects, spheres, i).0 >> BIN_SPOT & 1 == 1
+    }
+
+    /// The owner's principle for the casters of a projector's map: wherever
+    /// the camera stands or looks, a caster in the beam that covers a texel
+    /// is in the map; one past the draw distance, behind the camera or too
+    /// small to resolve is the same for every camera.
+    #[test]
+    fn the_casters_of_a_projector_map_do_not_depend_on_the_camera() {
+        let faces: Vec<CullFace> = (0..4)
+            .map(|i| CullFace {
+                index_count: 3,
+                first_index: 0,
+                base_vertex: 0,
+                object: i,
+                bits: FACE_FIRST | pass::OPAQUE,
+            })
+            .collect();
+        let sphere = |p: [f32; 3], r: f32| CullObject {
+            sphere: [p[0], p[1], p[2], r],
+            flags: object_flags::ACTIVE,
+            ..CullObject::NONE
+        };
+        let objects = [
+            // in the beam, near
+            sphere([10.0, 0.0, 0.0], 1.0),
+            // in the beam, 50 m: 1 m x 1024 / 50 m = 20 texels
+            sphere([50.0, 0.0, 0.0], 1.0),
+            // in the beam, too small to cover a texel: 0.01 x 1024 / 50 < 1
+            sphere([50.0, 0.0, 0.0], 0.01),
+            // out of the beam
+            sphere([10.0, 90.0, 0.0], 1.0),
+        ];
+        let spheres: Vec<(Vec3, f32)> = objects
+            .iter()
+            .map(|o| (Vec3::new(o.sphere[0], o.sphere[1], o.sphere[2]), o.sphere[3]))
+            .collect();
+        let expected = [true, true, false, false];
+        // cameras at, far from and around it, looking every way, one of them
+        // with the casters beyond its 64 m of draw distance
+        for (eye, forward) in [
+            (Vec3::new(-5.0, 0.0, 0.0), Vec3::X),
+            (Vec3::new(-5.0, 0.0, 0.0), Vec3::NEG_X),
+            (Vec3::new(10.0, 3.0, 2.0), Vec3::Y),
+            (Vec3::new(200.0, -150.0, 30.0), Vec3::NEG_Y),
+            (Vec3::new(-300.0, 0.0, 0.0), Vec3::X),
+            (Vec3::new(0.0, 0.0, 500.0), Vec3::NEG_Z),
+        ] {
+            let mut frame = spot_frame(eye, forward);
+            frame.sizes[1] = 4;
+            for (i, e) in expected.into_iter().enumerate() {
+                assert_eq!(
+                    spot_bit(&frame, &objects, &spheres, &faces, i),
+                    e,
+                    "object {i} from {eye} looking {forward}"
+                );
+            }
+            // (and with no shadows on, no map takes anything)
+            frame.sizes[3] &= !frame_flags::SHADOWS;
+            assert!(!spot_bit(&frame, &objects, &spheres, &faces, 0));
+        }
+    }
+
+    /// What the main view and the sun's cascades take is still the camera's.
+    #[test]
+    fn the_camera_still_limits_the_main_view_and_the_cascades() {
+        let faces = [CullFace {
+            index_count: 3,
+            first_index: 0,
+            base_vertex: 0,
+            object: 0,
+            bits: FACE_FIRST | pass::OPAQUE,
+        }];
+        let far = CullObject {
+            sphere: [100.0, 0.0, 0.0, 1.0],
+            flags: object_flags::ACTIVE,
+            ..CullObject::NONE
+        };
+        let spheres = [(Vec3::new(100.0, 0.0, 0.0), 1.0)];
+        let mut frame = spot_frame(Vec3::ZERO, Vec3::X);
+        frame.sizes[1] = 1;
+        // 100 m away with 64 m of draw distance: not drawn, no shadow of the
+        // sun's, whatever a projector's beam does with it
+        let (m, visible) = face_bins(&frame, &faces, &[far], &spheres, 0);
+        assert!(!visible);
+        assert_eq!(m & 0xf, 0);
+        assert_eq!(m >> BIN_SHADOW & 7, 0);
+        assert_eq!(m >> BIN_SHADOW_ALPHA & 7, 0);
+    }
+
+    #[test]
+    fn a_caster_resolves_one_texel_of_the_map_as_the_shader_says() {
+        let mut frame = frame_for_tests();
+        frame.spot_apex[3] = [1.0, 2.0, 3.0, 0.5];
+        frame.spot_scale[3] = [512.0, 0.0, 0.0, 0.0];
+        let at = |d: f32| Vec3::new(1.0 + d, 2.0, 3.0);
+        // r x 512 / d >= 1
+        assert!(spot_resolves(&frame, 3, at(100.0), 0.2));
+        assert!(!spot_resolves(&frame, 3, at(100.0), 0.19));
+        // the distance is at least the map's near plane
+        assert!(spot_resolves(&frame, 3, at(0.0), 0.001));
+        assert!(!spot_resolves(&frame, 3, at(0.0), 0.0009));
+        // a map that is no projector's resolves nothing
+        assert!(!spot_resolves(&frame, 0, at(1.0), 1000.0));
+        let src = include_str!("shaders/cull.wgsl");
+        assert!(src.contains("let dist = max(distance(c, a.xyz), a.w);"));
+        assert!(src.contains("return r * frame.spot_scale[k].x / dist >= 1.0;"));
     }
 
     #[test]

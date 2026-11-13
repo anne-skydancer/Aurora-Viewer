@@ -104,6 +104,8 @@ const F_SHADOW_ALPHA_ALL: u32 = 128u;
 const F_PROBE_SHADOW: u32 = 256u;
 // projector shadow map k is drawn
 const F_SPOT: u32 = 65536u;
+// any projector shadow map is drawn
+const F_SPOT_ANY: u32 = 4294901760u;
 const F_WATER_AIR: u32 = 1024u;
 // blended faces that are not rigged cast too (off: AURORA_BLEND_SHADOWS=0)
 const F_BLEND_CASTS: u32 = 2048u;
@@ -166,6 +168,12 @@ struct CullFrame {
     probe_eye: vec4<f32>,
     // frustums of the projector shadow maps
     spots: array<vec4<f32>, 96>,
+    // per projector shadow map: xyz the apex of its frustum, w the nearest
+    // distance a caster is measured at (the map's near plane)
+    spot_apex: array<vec4<f32>, 16>,
+    // per projector shadow map: x texels across one metre of beam at one
+    // metre (map pixels / tan(half the field of view)); 0: no projector's
+    spot_scale: array<vec4<f32>, 16>,
     cascades: array<mat4x4<f32>, 3>,
     // shadow map of the probe being captured (F_PROBE_SHADOW)
     probe_shadow: mat4x4<f32>,
@@ -298,6 +306,15 @@ fn spot_in(k: u32, c: vec3<f32>, r: f32) -> bool {
     return true;
 }
 
+// The caster's sphere covers at least one texel of projector map `k`
+// (gpu_cull::spot_resolves, kept line for line). It depends on the projector
+// and the caster alone, never on the camera.
+fn spot_resolves(k: u32, c: vec3<f32>, r: f32) -> bool {
+    let a = frame.spot_apex[k];
+    let dist = max(distance(c, a.xyz), a.w);
+    return r * frame.spot_scale[k].x / dist >= 1.0;
+}
+
 // Renderer cascade test: orthographic, radius in clip units.
 fn in_cascade(m: mat4x4<f32>, c: vec3<f32>, r: f32) -> bool {
     let p = m * vec4<f32>(c, 1.0);
@@ -380,28 +397,36 @@ fn face_mask(i: u32) -> u32 {
     let c = sphere.xyz;
     let r = sphere.w;
     let d = length(c - frame.eye.xyz);
-    if (d - r > frame.eye.w && !is_avatar) {
+    let fl = frame.sizes.w;
+    // Beyond the draw distance nothing of the camera's is drawn. The
+    // projector maps take their casters from the projector alone (its
+    // frustum and what the beam resolves, spot_resolves), wherever the
+    // camera is: a shadow does not change as the camera moves or turns.
+    let beyond = d - r > frame.eye.w && !is_avatar;
+    let spot_maps = (fl & F_SHADOWS) != 0u && (fl & F_SPOT_ANY) != 0u;
+    if (beyond && !spot_maps) {
         return 0u;
     }
-    let fl = frame.sizes.w;
     // LLAgent::needsRenderHead / LLVOAvatarSelf::updateAttachmentVisibility.
-    let viewed = sphere_in(frame.planes, c, r) && !(own_first_person && ((o.flags & OBJ_FIRST_PERSON_HIDDEN) != 0u || (f.bits & FACE_FIRST_PERSON_HIDDEN) != 0u));
-    let shadow_reach = (fl & F_SHADOWS) != 0u && d - r < frame.dist.x;
-    let reflect_reach = (fl & F_REFLECTIONS) != 0u && d - r < frame.dist.y;
+    let viewed = !beyond && sphere_in(frame.planes, c, r) && !(own_first_person && ((o.flags & OBJ_FIRST_PERSON_HIDDEN) != 0u || (f.bits & FACE_FIRST_PERSON_HIDDEN) != 0u));
+    let shadow_reach = !beyond && (fl & F_SHADOWS) != 0u && d - r < frame.dist.x;
+    let reflect_reach = !beyond && (fl & F_REFLECTIONS) != 0u && d - r < frame.dist.y;
     // a capture measures from its probe, not from the camera
-    let captured = (fl & F_REFLECTIONS) != 0u && (fl & F_PROBE) != 0u && (o.flags & OBJ_NO_PROBE) == 0u
+    let captured = !beyond && (fl & F_REFLECTIONS) != 0u && (fl & F_PROBE) != 0u && (o.flags & OBJ_NO_PROBE) == 0u
         && length(c - frame.probe_eye.xyz) - r < frame.probe_eye.w && sphere_in(frame.probe, c, r);
     // the rain's shelter map takes all of its square, however far the
     // shadows reach (a roof beyond them would leave the floor under it
     // open to the rain, cut at the seams between a building's meshes)
     let shelter_map = min(frame.groups.w, 15u);
-    let shelters = (fl & F_SPOT_SHELTER) != 0u && (fl & (F_SPOT << shelter_map)) != 0u && spot_in(shelter_map, c, r);
-    if (!viewed && !shadow_reach && !reflect_reach && !captured && !shelters) {
+    var shelters = !beyond && (fl & F_SPOT_SHELTER) != 0u && (fl & (F_SPOT << shelter_map)) != 0u && spot_in(shelter_map, c, r);
+    if (!viewed && !shadow_reach && !reflect_reach && !captured && !shelters && !spot_maps) {
         return 0u;
     }
-    // tiny objects far away (small object culling)
+    // tiny objects far away (small object culling; the projector maps have
+    // their own, spot_resolves)
     let large = r * frame.dist.z / max(d, 0.1) >= 1.5 || is_avatar;
-    if (!large && !captured) {
+    shelters = shelters && (large || captured);
+    if (!large && !captured && !spot_maps) {
         return 0u;
     }
     let in_view = viewed && large;
@@ -452,7 +477,8 @@ fn face_mask(i: u32) -> u32 {
     // casters of the projectors' shadow maps, all drawn with the alpha test
     // (the shelter map takes blended faces too: a glass roof keeps the rain
     // off as well as a tiled one)
-    if (caster || shelters) {
+    let spot_caster = spot_maps && (fp != PASS_BLEND || rigged || (fl & F_BLEND_CASTS) != 0u);
+    if (spot_caster || shelters) {
         // the rain's shelter map (projector map groups.w): what stands still
         // overhead only (an avatar, a rigged mesh, a rolling ball leave no
         // dry patch)
@@ -461,7 +487,7 @@ fn face_mask(i: u32) -> u32 {
         let moves = (o.flags & (OBJ_AVATAR | OBJ_RIGGED | OBJ_PHYSICAL)) != 0u || o.avatar < n;
         for (var k = 0u; k < 16u; k++) {
             let shelter = k == shelter_map && (fl & F_SPOT_SHELTER) != 0u;
-            let takes = caster || shelter;
+            let takes = (spot_caster && spot_resolves(k, c, r)) || shelter;
             if (takes && (fl & (F_SPOT << k)) != 0u && spot_in(k, c, r) && !(shelter && moves)) {
                 m |= 1u << (BIN_SPOT + k);
             }

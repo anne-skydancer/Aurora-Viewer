@@ -616,6 +616,11 @@ pub struct DrawLists {
     /// Per `blend_under_water` entry: the same sidedness rule before water.
     pub blend_under_double_sided: Vec<bool>,
     pub shadow_casters: Vec<ShadowCaster>,
+    /// CPU lists only: the casters of the projectors' shadow maps, every
+    /// object with the camera's reach left out (a projector's shadow is the
+    /// projector's, not the camera's); the renderer keeps the ones in each
+    /// beam that cover a texel of its map (`gpu_cull::spot_resolves`).
+    pub spot_casters: Vec<ShadowCaster>,
     /// Aurora Weather, CPU lists only: what the rain's shelter map takes in
     /// its square around the camera, shadows or not: what stands still
     /// (no avatar, worn, rigged or physical object), blended faces too (a
@@ -773,6 +778,7 @@ impl DrawLists {
         self.blend_depth_runs.clone_from(&src.blend_depth_runs);
         self.blend_depth_quiet.clone_from(&src.blend_depth_quiet);
         self.shadow_casters.clone_from(&src.shadow_casters);
+        self.spot_casters.clone_from(&src.spot_casters);
         self.shelter_casters.clone_from(&src.shelter_casters);
         self.terrain_shadow_casters.clone_from(&src.terrain_shadow_casters);
         self.reflection.clone_from(&src.reflection);
@@ -826,6 +832,7 @@ impl DrawLists {
         self.blend_depth_runs.clear();
         self.blend_depth_quiet.clear();
         self.shadow_casters.clear();
+        self.spot_casters.clear();
         self.shelter_casters.clear();
         self.terrain_shadow_casters.clear();
         self.reflection.clear();
@@ -944,6 +951,10 @@ pub struct Projector {
     pub ambiance: f32,
     /// Texture table slot of the projected texture.
     pub texture: u32,
+    /// Tangent of half the vertical field of view: how wide the frustum is
+    /// at a distance (the projector's shadow map covers `2 x distance x
+    /// half_tan` metres of height there).
+    pub half_tan: f32,
     /// World to the clip space of the projector's shadow map (depth 0 at
     /// its near plane, 1 at its reach), as LLPipeline::generateSunShadow
     /// draws the shadow of a projector.
@@ -1007,6 +1018,7 @@ impl Projector {
             focus: params.y,
             ambiance: params.z,
             texture,
+            half_tan: (fov * 0.5).tan(),
         }
     }
 }

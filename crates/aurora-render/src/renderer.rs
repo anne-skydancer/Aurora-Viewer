@@ -549,6 +549,22 @@ fn spot_shadow_views(f: &FrameParams, limit: usize, shelter: Option<usize>) -> [
     views
 }
 
+/// What the culling needs of each projector shadow map to keep the casters
+/// that cover a texel of it (`gpu_cull::spot_resolves`): the apex of the
+/// frustum with the map's near plane distance, and the texels across one
+/// metre of beam at one metre (`map_px` over the tangent of half the field of
+/// view). Zero for a map that is no projector's (the shelter's, or none).
+fn spot_cull_info(f: &FrameParams, views: &[Option<(SpotShadow, Mat4)>; SPOT_SHADOWS], map_px: u32) -> [([f32; 4], f32); SPOT_SHADOWS] {
+    std::array::from_fn(|k| {
+        let projector = views[k].and_then(|(s, _)| f.lights.get(s.light as usize)).and_then(|l| l.projector);
+        match projector {
+            // (the shadow map's near plane is 1 cm past the frustum's)
+            Some(p) => (p.origin.extend(p.near + 0.01).to_array(), map_px as f32 / p.half_tan.max(1e-3)),
+            None => ([0.0; 4], 0.0),
+        }
+    })
+}
+
 /// With the shadows off, how long the shelter map drawn alone is kept while
 /// the camera stays in its metre (what is built or moved under a roof shows
 /// within it).
@@ -7908,8 +7924,9 @@ impl Backend {
         }
         // projector shadow maps of the frame (none without shadows)
         let shelter_map = self.rain_shelter_map(f);
-        let spot_vp: [Option<Mat4>; SPOT_SHADOWS] =
-            spot_shadow_views(f, self.shadow_count as usize, shelter_map).map(|v| v.map(|(_, m)| m));
+        let spot_views = spot_shadow_views(f, self.shadow_count as usize, shelter_map);
+        let spot_vp: [Option<Mat4>; SPOT_SHADOWS] = spot_views.map(|v| v.map(|(_, m)| m));
+        let spot_info = spot_cull_info(f, &spot_views, self.shadow_size / 2);
         for (i, m) in cascades.iter().copied().map(Some).chain(spot_vp).enumerate() {
             let Some(m) = m else { continue };
             let u = ShadowU {
@@ -8144,13 +8161,15 @@ impl Backend {
             let planes = crate::gpu_cull::view_planes(*vp).map(|p| p.to_array());
             let inside = |c: &&ShadowCaster| crate::gpu_cull::sphere_in(&planes, c.center, c.radius);
             // the shelter map: what stands still, glass too (as the GPU's
-            // shelter bin), not the shadows' casters
-            let casters = if shelter_map == Some(k) {
-                &lists.shelter_casters
+            // shelter bin); a projector's map: what its beam holds and
+            // resolves, the camera's reach left out (`spot_resolves`)
+            let (apex, scale) = spot_info[k];
+            let resolves = |c: &&ShadowCaster| crate::gpu_cull::spot_resolves_at(apex, scale, c.center, c.radius);
+            if shelter_map == Some(k) {
+                spot_lists[k].extend(lists.shelter_casters.iter().filter(inside).map(|c| c.cmd));
             } else {
-                &lists.shadow_casters
-            };
-            spot_lists[k].extend(casters.iter().filter(inside).map(|c| c.cmd));
+                spot_lists[k].extend(lists.spot_casters.iter().filter(inside).filter(resolves).map(|c| c.cmd));
+            }
             spot_terrain_lists[k].extend(lists.terrain_shadow_casters.iter().filter(inside).map(|c| c.cmd));
         }
 
@@ -8271,6 +8290,10 @@ impl Backend {
                 flags,
             );
             frame.groups[3] = self.shelter_slot as u32;
+            for (k, (apex, scale)) in spot_info.into_iter().enumerate() {
+                frame.spot_apex[k] = apex;
+                frame.spot_scale[k] = [scale, 0.0, 0.0, 0.0];
+            }
             if let Some(c) = &capture {
                 frame.probe_eye = c.origin.extend(c.reach).to_array();
             }

@@ -2090,19 +2090,18 @@ fn projector_specular(slot: u32, tc: vec2<f32>, blur: f32) -> vec4<f32> {
 // Light left by the shadow map of projector `i` (1: lit, or no map), as
 // spotLightF.glsl with sampleSpotShadow / pcfSpotShadow (shadowUtil.glsl):
 // the configured budget extends the Legacy Viewer's two-map limit without
-// reducing each map's resolution (projector_shadows.rs). These shadows stop
-// with the sun's (the last tenth of its shadow distance).
+// reducing each map's resolution (projector_shadows.rs). Differs from the
+// Legacy Viewer on purpose: its shadow_clip.w cut fades the projectors'
+// shadows out at the sun's shadow distance from the camera (sampleSpotShadow,
+// shadowUtil.glsl). Here the shadow is valid wherever the projector's own
+// frustum reaches (its far plane is its reach): moving or turning the camera
+// never changes a projector's shadow.
 fn projector_shadow(i: i32, world_pos: vec3<f32>, n: vec3<f32>) -> f32 {
     let slot = frame.projectors[i].tex.y;
     if (frame.params.z < 0.5 || slot == 0u) {
         return 1.0;
     }
     let k = slot - 1u;
-    let far = frame.cascade_splits.z;
-    let depth = distance(world_pos, frame.camera_pos.xyz);
-    if (depth >= far) {
-        return 1.0;
-    }
     // RenderSpotShadowOffset: the point is moved 4 cm along its normal
     let lp = frame.spot_vp[k] * vec4<f32>(world_pos + n * 0.04, 1.0);
     if (lp.w <= 0.0) {
@@ -2134,8 +2133,7 @@ fn projector_shadow(i: i32, world_pos: vec3<f32>, n: vec3<f32>) -> f32 {
     }
     var s = sum * 0.2;
     // the map fades in and out as its projector takes or loses it
-    s = clamp(s + frame.spot_fade[k / 4u][k % 4u], 0.0, 1.0);
-    return mix(1.0, s, clamp((far - depth) / (far * 0.1), 0.0, 1.0));
+    return clamp(s + frame.spot_fade[k / 4u][k % 4u], 0.0, 1.0);
 }
 
 // What a local light sends to a point.
