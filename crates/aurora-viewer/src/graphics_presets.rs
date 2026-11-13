@@ -129,7 +129,7 @@ impl Preset {
                 max_particles: 2048,
                 shadow_quality: 0,
                 projector_shadows: false,
-                projector_shadow_limit: 2,
+                projector_shadow_limit: 4,
                 ssao: 0,
                 ao_method: 0,
                 gtao_quality: 2,
@@ -160,7 +160,7 @@ impl Preset {
                 max_particles: 4096,
                 shadow_quality: 0,
                 projector_shadows: false,
-                projector_shadow_limit: 2,
+                projector_shadow_limit: 8,
                 ssao: 1,
                 ao_method: 1,
                 gtao_quality: 0,
@@ -193,7 +193,7 @@ impl Preset {
                 max_particles: 4096,
                 shadow_quality: 2,
                 projector_shadows: false,
-                projector_shadow_limit: 2,
+                projector_shadow_limit: 16,
                 ssao: 1,
                 ao_method: 1,
                 gtao_quality: 2,
@@ -232,7 +232,7 @@ impl Preset {
                 max_particles: 8192,
                 shadow_quality: 4,
                 projector_shadows: true,
-                projector_shadow_limit: 2,
+                projector_shadow_limit: 16,
                 ssao: 2,
                 ao_method: 1,
                 gtao_quality: 3,
@@ -869,6 +869,18 @@ impl Values {
 
 #[cfg(test)]
 mod tests {
+    /// The projectors' shadow budget of a level, 4 / 8 / 16 / 16 from Low to
+    /// Deluxe (16 maps are the cap of the culling's bins). The slider stays
+    /// the user's.
+    #[test]
+    fn the_levels_set_the_projector_shadow_budget() {
+        for (preset, limit) in [(Preset::Low, 4), (Preset::Medium, 8), (Preset::High, 16), (Preset::Deluxe, 16)] {
+            let mut s = Settings::default();
+            preset.apply(&mut s);
+            assert_eq!(s.projector_shadow_limit, limit, "{preset:?}");
+        }
+    }
+
     #[test]
     fn projector_shadow_budget_is_saved_with_custom_presets_and_old_presets_keep_two() {
         let mut settings = Settings::default();

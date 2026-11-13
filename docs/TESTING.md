@@ -4649,10 +4649,10 @@ both open states and the selection count. Capture at frame 620.
   our avatar. The square of light of the projector with the white image has
   soft edges (visible with `AURORA_DEMO_TOD=3`): the fade comes from the
   distance to the focal point, not from the levels of the texture. The post
-  casts its shadow on the wall: the two projectors most present on screen
-  have a shadow map (`AURORA_PROJECTOR_SHADOWS=0`: none, the wall is
-  lit behind the post), and their shadows fade in
-  during the first second. `point`: the three projectors without their
+  casts its shadow on the wall: each projector has a shadow map up to the
+  budget (`AURORA_PROJECTOR_SHADOWS=0`: none, the wall is lit behind the
+  post), kept by the projector whichever way the camera looks; a projector
+  that appears has its shadow at once. `point`: the three projectors without their
   texture, hence point lights, as they were rendered before being supported —
   the pool light then lights in cyan our avatar from below and
   the sides of the slab's relief turned towards it. The orange light is
@@ -4663,10 +4663,18 @@ both open states and the selection count. Capture at frame 620.
   reversing orbit after frame 700. Captures hide the interface. Use Deluxe
   and compare with `AURORA_PROJECTOR_SHADOWS=0`; the projectors stay lit and
   only their shadows change. `AURORA_DEMO_ALTITUDE=807` places the floor
-  near 839 m. Shadow-map retention requires a 20% apparent-area advantage
-  to replace a current projector, and moving-camera fades accelerate by at
-  most four times (0.25 s per fade). A camera turn must not abruptly blink
-  a fully visible shadow off. `cluster-bench` keeps the fixed camera and
+  near 839 m. A projector's light and shadow change only when the projector
+  or something in its beam moves, never when the camera moves or turns:
+  with a budget of 15 or more (`AURORA_PROJECTOR_SHADOW_LIMIT=15`) every
+  projector of the cluster has its map for the whole orbit, so the shadows
+  do not change as the camera circles, and with `AURORA_PROJECTOR_TRACE=1`
+  the `slots` and `fade` of the trace stay the same on every line. With a
+  smaller budget the maps go to the nearer projectors (distance bands with a
+  margin, `scene/projector_cache.rs`), and a map is given up only when
+  another projector is at least two bands nearer or twice as strong, with
+  a fade of 0.5 s, whatever the camera does. Compare captures from the
+  two ends of the orbit (frames well after 700): the view differs, the
+  shadows on the floor do not. `cluster-bench` keeps the fixed camera and
   exits after 50 seconds. For a same-quality budget A/B, use
   `AURORA_PROJECTOR_SHADOW_LIMIT=2` then `10`, `AURORA_PROFILE=1`, disabled
   vertical sync and the same resolution and preset. Discard the first
@@ -11730,8 +11738,10 @@ What the inventory must show with these scenarios:
   `AURORA_SSIL_INTENSITY=<0-8>` replaces it for a launch, to compare (at
   2 a glow starts around the foot of objects, at 4 it is grainy).
 - **`AURORA_PROJECTOR_TRACE=1`**: writes `projector trace:` lines with the
-  camera position, selected projector object indices, shadow-map
-  owners, their fade values and candidate priorities. It requires an info
+  camera position, the number of projectors that may hold a shadow map, the
+  shadow-map owners (the first eight digits of each projector's id, `-` for
+  a free map) and their fade values. Neither depends on the camera as long
+  as no projector comes or goes. It requires an info
   log filter (`RUST_LOG=warn,aurora_viewer::scene::lights=info` is enough).
   Use a separately named test log and unset the variable after diagnosis;
   these per-frame lines are intended for local investigation.
