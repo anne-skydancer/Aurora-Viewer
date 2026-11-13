@@ -1928,6 +1928,7 @@ mod tests {
                 base_vertex: 0,
                 object: i,
                 bits: FACE_FIRST | pass::OPAQUE,
+                _pad: [0; 3],
             })
             .collect();
         let sphere = |p: [f32; 3], r: f32| CullObject {
@@ -1984,6 +1985,7 @@ mod tests {
             base_vertex: 0,
             object: 0,
             bits: FACE_FIRST | pass::OPAQUE,
+            _pad: [0; 3],
         }];
         let far = CullObject {
             sphere: [100.0, 0.0, 0.0, 1.0],
