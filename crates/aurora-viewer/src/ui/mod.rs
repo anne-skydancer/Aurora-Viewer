@@ -110,6 +110,7 @@ pub mod place_card;
 pub mod place_details;
 pub mod places;
 pub mod portals;
+pub mod pose_stand;
 pub mod presence;
 pub mod profile;
 pub mod quick_prefs;
@@ -242,6 +243,8 @@ pub struct Panels {
     /// The conversation log (toolbar `conversation_log`, Communicate ›
     /// Conversation log…).
     pub conversation_log: bool,
+    /// The pose stand (toolbar `pose_stand`).
+    pub pose_stand: bool,
     /// "About Aurora Viewer" (Help menu): the version, the system
     /// information and the licences.
     pub about: bool,
@@ -316,6 +319,7 @@ impl Panels {
             voice_controls: false,
             omnifilter: false,
             conversation_log: false,
+            pose_stand: false,
             about: false,
             stream_title: settings.audio.stream_title_window,
             stream_title_history: false,

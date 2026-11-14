@@ -921,6 +921,13 @@ fn main_menus(ui: &mut egui::Ui, p: &Palette, panels: &mut Panels, st: &StatusIn
         if menu::check(ui, p, "receipt-filled", tracker, panels.money_tracker, true) {
             super::money_tracker::toggle(ui.ctx(), &mut panels.money_tracker);
         }
+        // menu_viewer.xml: Pose Stand... (Floater.Show fs_posestand, enabled
+        // by fs_when_not_sitting): it opens the window, or brings it forward
+        // when open; the toolbar button is the one that toggles it
+        if menu::item_if(ui, p, "man-filled", aurora_i18n::tr!("ui-bars-pose-stand"), !st.seated) {
+            super::widgets::open_floater(ui.ctx(), super::pose_stand::WINDOW, &mut panels.pose_stand);
+            super::widgets::bring_floater_front(ui.ctx(), super::pose_stand::WINDOW);
+        }
         // menu_viewer.xml: Me › Experiences (Picks, before it there, has
         // no entry in this menu)
         flip_window(
@@ -2463,6 +2470,8 @@ pub fn run_command(ctx: &egui::Context, cmd: &str, panels: &mut Panels) -> BarAc
         "omnifilter" => toggle(super::omnifilter::WINDOW, &mut panels.omnifilter),
         // Floater.Toggle conversation
         "conversation_log" => toggle(super::conversation_log::WINDOW, &mut panels.conversation_log),
+        // Floater.Toggle fs_posestand
+        "pose_stand" => toggle(super::pose_stand::WINDOW, &mut panels.pose_stand),
         // the Legacy Viewer's Statistics (Floater.Toggle stats) opens
         // Aurora's Performance window
         "performance" | "statistics" => toggle("perf", &mut panels.perf),
@@ -2580,6 +2589,7 @@ fn command_active(cmd: &str, panels: &Panels, flying: bool, seated: bool, mousel
         "voice" => panels.voice_controls,
         "omnifilter" => panels.omnifilter,
         "conversation_log" => panels.conversation_log,
+        "pose_stand" => panels.pose_stand,
         "performance" | "statistics" => panels.perf,
         "snapshot" => panels.snapshot,
         "beacons" => panels.beacons,
@@ -3326,10 +3336,15 @@ pub(crate) fn toolbar_row(
             && (!panels.chat || super::widgets::floater_minimized(ui.ctx(), "conversations"));
         let count = if badge { row.unread } else { 0 };
         // the Photo roll's button, dimmed while the session has no photo
-        // and the Avatar Welcome Pack's and the Destination Guide's on a grid without one (GridFeatureCheck)
+        // and the Avatar Welcome Pack's and the Destination Guide's on a grid without one (GridFeatureCheck),
+        // and the pose stand's, dimmed while we sit (Agent.IsActionAllowed
+        // fs_when_not_sitting), its own ground lock included
         let no_pack = b.command == "avatar" && !toolbar.avatar_welcome;
         let no_guide = b.command == "destinations" && !toolbar.destinations;
-        let usable = !(b.command == "photo_roll" && toolbar.photo_roll_empty) && !no_pack && !no_guide;
+        let usable = !(b.command == "photo_roll" && toolbar.photo_roll_empty)
+            && !no_pack
+            && !no_guide
+            && !(b.command == "pose_stand" && row.seated);
         let tip = if badge {
             aurora_i18n::tr!(
                 "ui-bars-unread",
