@@ -11085,8 +11085,11 @@ impl Backend {
             draw(&mut pass, &self.pipelines.hud_debug_red, hud_debug_red_range);
             draw(&mut pass, &self.pipelines.hud_debug_blue, hud_debug_blue_range);
         }
-        // the HUD faces' pattern, whatever "Show highlight" says (above)
-        if hud_select_pattern_range.1 > 0
+        // the HUD faces' pattern, whatever "Show highlight" says (above); only when
+        // the HUD pass ran, which clears the HUD depth. With the halo off this pass
+        // carries no timestamp, so its time is not in the GPU total.
+        if draw_huds
+            && hud_select_pattern_range.1 > 0
             && let Some((_, _, depth)) = &self.hud_depth
         {
             let mut pass = crate::selection::begin_pattern(&mut encoder, &surface_view, depth);
