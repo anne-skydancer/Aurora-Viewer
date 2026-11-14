@@ -32,6 +32,15 @@
 //! them): rigged meshes and avatars (their shadow moves with the animation
 //! every frame), flexible prims (one geometry per object), trees and grass
 //! (their own factor), HUDs.
+//!
+//! Which maps hold a caster is decided with the same sphere: the origin and
+//! half the scale diagonal (`ObjGpu::member_sphere`, `CullObject::beam` on the
+//! GPU, `l.spot` on the CPU), for the objects whose geometry lies in its unit
+//! box at every level of detail (static prims, sculpts and meshes; the box is
+//! the build's convention, a mesh's position domain is the uploader's, and
+//! nothing here invents a bound from history). The others are tested with the
+//! camera's bounds, so for them a map's membership can still follow the
+//! camera's level at a beam's edge.
 
 use super::{FaceDraw, GeomKey, GpuGeom, ObjGpu, lod_for};
 use aurora_render::gpu_cull::{sphere_in, view_planes};
