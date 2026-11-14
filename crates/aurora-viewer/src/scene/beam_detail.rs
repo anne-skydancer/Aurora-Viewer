@@ -576,6 +576,7 @@ mod tests {
             physics_convex: None,
             physics_mesh: None,
             version: 1,
+            creator: Uuid::nil(),
         };
         let resolve = |_: &Uuid, lod: u8| header.actual_lod(lod as usize).map(|a| a as u8);
         // 2 draws level 1's block, so does 0: shadow 0 against camera 2 is the camera's geometry

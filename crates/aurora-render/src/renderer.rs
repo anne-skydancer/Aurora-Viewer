@@ -2803,6 +2803,7 @@ fn shadow_desc(label: &'static str, fs: Option<&'static str>) -> PipeDesc<'stati
         samples: 1,
         format: None,
         gbuf: false,
+        range: None,
         depth_format: Some(SHADOW_FORMAT),
         depth_bias: wgpu::DepthBiasState {
             constant: 2,
@@ -6498,6 +6499,7 @@ impl Backend {
                     il,
                     false,
                     true,
+                    soft,
                 )
             }),
             b: mk(

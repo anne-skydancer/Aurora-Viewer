@@ -1995,6 +1995,11 @@ mod tests {
             back_key: None,
             quality_reduced: false,
             pano: None,
+            shadows: ShadowView {
+                softness: 1.0,
+                intensity: 1.0,
+                soft: false,
+            },
         }
     }
 
