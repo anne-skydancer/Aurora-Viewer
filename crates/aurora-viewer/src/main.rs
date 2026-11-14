@@ -83,6 +83,7 @@ mod overlay_hooks;
 mod own_motion;
 mod physics_editor;
 mod power;
+mod pose_stand;
 mod raw_mouse;
 mod report_abuse;
 mod scene;
