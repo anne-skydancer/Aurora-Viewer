@@ -11752,7 +11752,8 @@ What the inventory must show with these scenarios:
   level of detail of its geometry in the map, level of its alpha-tested
   textures, read as the coarser of the level resident and the level the map
   asks for, `beam_detail::hash_level`: it changes while the floor is not met,
-  and stays when the camera loads a finer level than the map needs): after
+  and stays when a finer level than the map needs is loaded, which is a
+  blind spot on purpose: see `tex=` below): after
   the shade has loaded, the hash is the same on every line
   of the dolly, whatever the camera does (for a static prim, sculpt or mesh
   that keeps to its unit box, the maps' casters, their level and their
@@ -11782,26 +11783,46 @@ What the inventory must show with these scenarios:
   camera still: the camera's own level of detail changes with no move), and
   `close` (1.2 m from the shade, so that the camera asks for a finer level of
   its texture than the map does). The reference is held 200 frames first
-  (frames 700 to 900), then the phases follow, 300 frames for one excursion,
-  500 for two (`demo_projector_shade.rs`, `Phase`); the demo logs
-  `AURORA_CAPTURE_FRAMES` when the shade arrives (the reference twice, then the end of every
-  hold: `790,890,1390,1690,2190,2490,2790,3090,3590,3890`). The shade wears a
-  4096 px texture repeated twice (the map asks for 1024 to 2048 px of it, the
-  camera is capped at 2048), the same look as the dolly's. The `projector
-  casters:` lines then give `frame=` and `phase=`, and per map
-  `tex=<resident level>/<level the map asks for>` of each alpha-tested
-  texture (255: none): every map keeps one hash from the first reference
-  hold to the last, `close` loading level 1 where the map asks for 2.
-  `shade,close` runs the reference and the close phase only (captures
-  `790,890,1190`). Compare the captures with the first reference, over a
-  crop that holds the lit disc and its holes and nothing animated
-  (`crop=420:320:600:395` at `AURORA_WINDOW_SIZE=1600,900` and
-  `AURORA_DEMO_SUN=0,-30`): two captures of the reference with nothing between
-  them are the noise floor (86 dB PSNR, largest pixel difference 1 of 255);
-  the axes come out at the same value (the roll and zoom captures add a
-  7 x 7 px patch at the crop's corner, off the shadow), and the capture after `close`, when the
-  finer level is resident, is 50 dB, largest difference 30 to 44, on the
-  edges of the holes only (a fraction of a pixel).
+  (frames 700 to 900), then the phases follow, 200 frames for one excursion,
+  100 more for the hold (`demo_projector_shade.rs`, `Phase`); the demo logs
+  `AURORA_CAPTURE_FRAMES` when the shade arrives: the reference twice
+  (`790,890`), then per phase the middle of the dwell at the far end of each
+  excursion and the end of its hold (`1000,1200,1390,1500,1690,1800,2000,
+  2190,2300,2490,2600,2790,2900,3090,3200,3400,3590,3700,3890`). The shade
+  wears a 4096 px texture repeated twice (at Deluxe the map asks for 512 to
+  1024 px of it, the camera is capped at 2048), the same look as the dolly's.
+  The scenario stands alone: the generic projector demo is not spawned with
+  it. **It needs shadows on**: the demo profile's saved settings can leave
+  them off (the floor is then lit evenly, with no dots, and every comparison
+  is empty), so launch with `AURORA_GRAPHICS_PRESET=deluxe` (shadow quality
+  4, projector shadows, 2048 px textures; the asked level below is that of
+  this preset), `AURORA_DEMO_SUN=0,-30`, `AURORA_WINDOW_SIZE=1600,900`; and
+  look at a capture before trusting a number. The `projector casters:` lines
+  give `frame=` and `phase=`, and per map `tex=<resident level>/<level the
+  map asks for>` of each alpha-tested texture (255: none): every map keeps
+  one hash from the first reference hold to the last (the hash reads the
+  coarser of the two levels, so it does **not** show a finer resident level:
+  read `tex=` for that). `shade,close` runs the reference and the close
+  phase only (captures `790,890,1000,1190`), and `shade,finer` the
+  reference and a phase where the camera does not move while the demo asks
+  for the finer level itself (captures `790,890,1190`): the control of
+  `close`.
+  Compare the captures with the first reference over a crop that holds the
+  lit disc and its holes and nothing animated (420 x 280 at 600,435 of a
+  1600 x 900 frame, clear of the glowing orb above it; the dwell captures
+  are only looked at, the shadow is not compared there). Two captures of the
+  reference with nothing between them are the noise floor: identical to the
+  pixel. Every return to the reference pose of `shade,axes` is identical
+  too, on every axis. The capture after `close`, when level 1 of the texture
+  is resident where the map asks for 2, is 47 dB over the crop, largest
+  pixel difference 44 of 255, 513 of 117,600 pixels differing by more than
+  8, on the edges of the holes only; `shade,finer`, the camera not moving,
+  gives the same numbers: a finer resident level changes the shadow, the
+  camera does not. This is a known failure of the principle (a shadow does
+  not depend on the observer), reported and not fixed. The cause is not
+  isolated: the demo's texels are analytic at every size, so level 1 and
+  level 2 hold the same data at 1024 px; the likely mechanism is the lookup
+  clamping at the base level of whichever level is resident.
 - **`AURORA_PROJECTOR_TRACE=1`**: writes `projector trace:` lines with the
   camera position, the number of projectors that may hold a shadow map, the
   shadow-map owners (the last eight digits of each projector's id, `-` for
