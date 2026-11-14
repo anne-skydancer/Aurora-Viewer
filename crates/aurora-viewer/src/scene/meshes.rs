@@ -461,6 +461,14 @@ impl MeshStreamer {
         })
     }
 
+    /// The level of detail whose block a request for `lod` draws
+    /// (`MeshHeader::actual_lod`, as `build_mesh_lod` resolves it); None
+    /// while the header is not known.
+    pub fn resolved_lod(&self, id: &Uuid, lod: u8) -> Option<u8> {
+        let h = self.entries.get(id)?.header.as_ref()?;
+        h.actual_lod(lod as usize).map(|a| a as u8)
+    }
+
     pub fn meta(&self, id: &Uuid) -> Option<MeshMeta> {
         let e = self.entries.get(id).filter(|e| e.ready())?;
         let h = e.header.as_ref()?;

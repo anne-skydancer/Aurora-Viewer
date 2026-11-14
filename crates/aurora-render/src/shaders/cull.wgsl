@@ -33,6 +33,8 @@ const BIN_REFL_MIRROR: u32 = 8u;
 const BIN_PROBE: u32 = 9u;
 const BIN_SHADOW_ALPHA: u32 = 10u;
 const BIN_SPOT: u32 = 13u;
+// the projectors' shadow maps (one bin each, from BIN_SPOT): SPOT_SHADOWS in gpu_cull.rs
+const SPOT_MAPS: u32 = 16u;
 // argument regions after the bins: occlusion phase 1 and phase 2 prepass
 // lists of each main bin (own counts)
 const REGION_PRE1: u32 = 31u;
@@ -65,6 +67,7 @@ const PASS_MASK_2S: u32 = 4u;
 const PASS_BLEND: u32 = 5u;
 const PASS_WATER_EXCLUSION: u32 = 6u;
 const FACE_FIRST: u32 = 8u;
+const FACE_SHADOW_RANGE: u32 = 32u;
 
 // CullObject.flags
 const OBJ_ACTIVE: u32 = 1u;
@@ -104,6 +107,8 @@ const F_SHADOW_ALPHA_ALL: u32 = 128u;
 const F_PROBE_SHADOW: u32 = 256u;
 // projector shadow map k is drawn
 const F_SPOT: u32 = 65536u;
+// any projector shadow map is drawn
+const F_SPOT_ANY: u32 = 4294901760u;
 const F_WATER_AIR: u32 = 1024u;
 // blended faces that are not rigged cast too (off: AURORA_BLEND_SHADOWS=0)
 const F_BLEND_CASTS: u32 = 2048u;
@@ -119,15 +124,19 @@ struct CullFace {
     base_vertex: i32,
     object: u32,
     bits: u32,
-    _p0: u32,
-    _p1: u32,
-    _p2: u32,
+    // the range of the projectors' shadow bins (FACE_SHADOW_RANGE)
+    shadow_index_count: u32,
+    shadow_first_index: u32,
+    shadow_base_vertex: i32,
 }
 
 struct CullObject {
     // bounding sphere (avatars: their posed body), in the world or in the
     // space of `anchor`
     sphere: vec4<f32>,
+    // the sphere the projectors' maps take it with, in the same space
+    // (radius 0: `sphere`'s); only the projector bins read it
+    beam: vec4<f32>,
     flags: u32,
     // avatar whose state applies (itself, or the wearer), or none
     avatar: u32,
@@ -166,6 +175,12 @@ struct CullFrame {
     probe_eye: vec4<f32>,
     // frustums of the projector shadow maps
     spots: array<vec4<f32>, 96>,
+    // per projector shadow map: xyz the apex of its frustum, w the nearest
+    // distance a caster is measured at (the map's near plane)
+    spot_apex: array<vec4<f32>, 16>,
+    // per projector shadow map: x texels across one metre of beam at one
+    // metre (map pixels / tan(half the field of view)); 0: no projector's
+    spot_scale: array<vec4<f32>, 16>,
     cascades: array<mat4x4<f32>, 3>,
     // shadow map of the probe being captured (F_PROBE_SHADOW)
     probe_shadow: mat4x4<f32>,
@@ -211,8 +226,15 @@ struct OcclParams {
 @group(0) @binding(10) var<storage, read> palettes: array<mat4x4<f32>>;
 @group(0) @binding(11) var<storage, read> skin_binds: array<SkinBind>;
 @group(0) @binding(12) var<storage, read> joint_boxes: array<JointBox>;
-// world sphere of each object this frame (cs_spheres)
+// world sphere of each object this frame (cs_spheres), then, from
+// sphere_slots(), the sphere the projectors' maps take each with
 @group(0) @binding(13) var<storage, read_write> spheres: array<vec4<f32>>;
+
+// Objects the spheres buffer has room for: its first half holds their
+// camera spheres, its second their beam spheres.
+fn sphere_slots() -> u32 {
+    return arrayLength(&spheres) / 2u;
+}
 
 // World bounding sphere of an object (kept line for line with
 // CullObject::world_sphere). A worn object's follows its anchor (a rigid
@@ -269,11 +291,26 @@ fn world_sphere(o: CullObject) -> vec4<f32> {
     return rest;
 }
 
+// The sphere the projectors' maps take an object with (kept line for line
+// with CullObject::world_beam): its beam sphere placed like `sphere`, or
+// `camera` (its world sphere) when it has none or is posed.
+fn world_beam(o: CullObject, camera: vec4<f32>) -> vec4<f32> {
+    if (o.beam.w <= 0.0 || (o.flags & OBJ_POSED) != 0u) {
+        return camera;
+    }
+    if (o.anchor == 0u || o.anchor > arrayLength(&palettes)) {
+        return o.beam;
+    }
+    return vec4<f32>((palettes[o.anchor - 1u] * vec4<f32>(o.beam.xyz, 1.0)).xyz, o.beam.w);
+}
+
 @compute @workgroup_size(64)
 fn cs_spheres(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    if (i < frame.sizes.y && i < arrayLength(&spheres)) {
-        spheres[i] = world_sphere(objects[i]);
+    if (i < frame.sizes.y && i < sphere_slots()) {
+        let camera = world_sphere(objects[i]);
+        spheres[i] = camera;
+        spheres[sphere_slots() + i] = world_beam(objects[i], camera);
     }
 }
 
@@ -296,6 +333,16 @@ fn spot_in(k: u32, c: vec3<f32>, r: f32) -> bool {
         }
     }
     return true;
+}
+
+// The caster's sphere covers at least one texel of projector map `k`
+// (gpu_cull::spot_resolves, kept line for line). It depends on the projector
+// and the sphere it is given alone, never on the camera itself (the beam
+// sphere of a caster that has one, cs_spheres).
+fn spot_resolves(k: u32, c: vec3<f32>, r: f32) -> bool {
+    let a = frame.spot_apex[k];
+    let dist = max(distance(c, a.xyz), a.w);
+    return r * frame.spot_scale[k].x / dist >= 1.0;
 }
 
 // Renderer cascade test: orthographic, radius in clip units.
@@ -348,8 +395,12 @@ var<workgroup> wg_shadow: array<atomic<u32>, SHADOW_STATS>;
 // past it is drawn with no index (write_args), counted once per frame in
 // COUNT_CLAMPED (cs_classify) and left out of the triangle statistics.
 fn index_range_fits(f: CullFace) -> bool {
+    return range_fits(f.first_index, f.index_count);
+}
+
+fn range_fits(first_index: u32, index_count: u32) -> bool {
     let index_limit = frame.groups.z;
-    return f.first_index <= index_limit && f.index_count <= index_limit - f.first_index;
+    return first_index <= index_limit && index_count <= index_limit - first_index;
 }
 
 // Bins of face `i` this frame (0: not drawn anywhere).
@@ -380,28 +431,42 @@ fn face_mask(i: u32) -> u32 {
     let c = sphere.xyz;
     let r = sphere.w;
     let d = length(c - frame.eye.xyz);
-    if (d - r > frame.eye.w && !is_avatar) {
+    let fl = frame.sizes.w;
+    // Beyond the draw distance nothing of the camera's is drawn. The
+    // projector maps take a caster that has a beam sphere (a static prim,
+    // sculpt or mesh) from the projector alone (its frustum and what the
+    // beam resolves, spot_resolves), wherever the camera is: its shadow does
+    // not change as the camera moves or turns. The others (plants, flexible
+    // prims, rigged meshes, the sculpt placeholder) have the camera's sphere
+    // in its place (cs_spheres), and an avatar's state gate above is the
+    // camera's too.
+    let beyond = d - r > frame.eye.w && !is_avatar;
+    // (the rain's shelter map is no projector's: it keeps the camera's rules)
+    let shelter_map = min(frame.groups.w, SPOT_MAPS - 1u);
+    let shelter_bit = select(0u, F_SPOT << shelter_map, (fl & F_SPOT_SHELTER) != 0u);
+    let spot_maps = (fl & F_SHADOWS) != 0u && (fl & F_SPOT_ANY & ~shelter_bit) != 0u;
+    if (beyond && !spot_maps) {
         return 0u;
     }
-    let fl = frame.sizes.w;
     // LLAgent::needsRenderHead / LLVOAvatarSelf::updateAttachmentVisibility.
-    let viewed = sphere_in(frame.planes, c, r) && !(own_first_person && ((o.flags & OBJ_FIRST_PERSON_HIDDEN) != 0u || (f.bits & FACE_FIRST_PERSON_HIDDEN) != 0u));
-    let shadow_reach = (fl & F_SHADOWS) != 0u && d - r < frame.dist.x;
-    let reflect_reach = (fl & F_REFLECTIONS) != 0u && d - r < frame.dist.y;
+    let viewed = !beyond && sphere_in(frame.planes, c, r) && !(own_first_person && ((o.flags & OBJ_FIRST_PERSON_HIDDEN) != 0u || (f.bits & FACE_FIRST_PERSON_HIDDEN) != 0u));
+    let shadow_reach = !beyond && (fl & F_SHADOWS) != 0u && d - r < frame.dist.x;
+    let reflect_reach = !beyond && (fl & F_REFLECTIONS) != 0u && d - r < frame.dist.y;
     // a capture measures from its probe, not from the camera
-    let captured = (fl & F_REFLECTIONS) != 0u && (fl & F_PROBE) != 0u && (o.flags & OBJ_NO_PROBE) == 0u
+    let captured = !beyond && (fl & F_REFLECTIONS) != 0u && (fl & F_PROBE) != 0u && (o.flags & OBJ_NO_PROBE) == 0u
         && length(c - frame.probe_eye.xyz) - r < frame.probe_eye.w && sphere_in(frame.probe, c, r);
     // the rain's shelter map takes all of its square, however far the
     // shadows reach (a roof beyond them would leave the floor under it
     // open to the rain, cut at the seams between a building's meshes)
-    let shelter_map = min(frame.groups.w, 15u);
-    let shelters = (fl & F_SPOT_SHELTER) != 0u && (fl & (F_SPOT << shelter_map)) != 0u && spot_in(shelter_map, c, r);
-    if (!viewed && !shadow_reach && !reflect_reach && !captured && !shelters) {
+    var shelters = !beyond && (fl & F_SPOT_SHELTER) != 0u && (fl & (F_SPOT << shelter_map)) != 0u && spot_in(shelter_map, c, r);
+    if (!viewed && !shadow_reach && !reflect_reach && !captured && !shelters && !spot_maps) {
         return 0u;
     }
-    // tiny objects far away (small object culling)
+    // tiny objects far away (small object culling; the projector maps have
+    // their own, spot_resolves)
     let large = r * frame.dist.z / max(d, 0.1) >= 1.5 || is_avatar;
-    if (!large && !captured) {
+    shelters = shelters && (large || captured);
+    if (!large && !captured && !spot_maps) {
         return 0u;
     }
     let in_view = viewed && large;
@@ -452,17 +517,35 @@ fn face_mask(i: u32) -> u32 {
     // casters of the projectors' shadow maps, all drawn with the alpha test
     // (the shelter map takes blended faces too: a glass roof keeps the rain
     // off as well as a tiled one)
-    if (caster || shelters) {
+    let spot_caster = spot_maps && (fp != PASS_BLEND || rigged || (fl & F_BLEND_CASTS) != 0u);
+    if (spot_caster || shelters) {
         // the rain's shelter map (projector map groups.w): what stands still
         // overhead only (an avatar, a rigged mesh, a rolling ball leave no
         // dry patch)
         // (an attachment too, rigged or not: horns, hair, a hat; the snow
         // would settle on it at once, as deep as on the ground)
         let moves = (o.flags & (OBJ_AVATAR | OBJ_RIGGED | OBJ_PHYSICAL)) != 0u || o.avatar < n;
-        for (var k = 0u; k < 16u; k++) {
-            let shelter = k == shelter_map && (fl & F_SPOT_SHELTER) != 0u;
-            let takes = caster || shelter;
-            if (takes && (fl & (F_SPOT << k)) != 0u && spot_in(k, c, r) && !(shelter && moves)) {
+        // (the beam sphere: no level of detail of the camera moves it; read
+        // once, not once per map)
+        let beam = spheres[sphere_slots() + f.object];
+        for (var k = 0u; k < SPOT_MAPS; k++) {
+            if ((fl & (F_SPOT << k)) == 0u) {
+                continue;
+            }
+            // the shelter map takes what `shelters` kept (large, in its
+            // square) that stands still, by the camera's sphere; a projector's,
+            // what its beam resolves, by the beam sphere
+            var takes = false;
+            var tc = c;
+            var tr = r;
+            if ((shelter_bit >> 16u) == (1u << k)) {
+                takes = shelters && !moves;
+            } else {
+                tc = beam.xyz;
+                tr = beam.w;
+                takes = spot_caster && spot_resolves(k, tc, tr);
+            }
+            if (takes && spot_in(k, tc, tr)) {
                 m |= 1u << (BIN_SPOT + k);
             }
         }
@@ -589,18 +672,28 @@ fn pack_bins(m: u32) -> BinPack {
     return v;
 }
 
-fn write_args(slot: u32, f: CullFace, rec: u32, instances: u32) {
+// `projector`: a projector's shadow bin (not the rain's shelter map): a face
+// with a shadow range draws it there when it fits the index buffer, else the
+// camera's range (`range_fits` only bounds the index range, as
+// `index_range_fits` does: it cannot tell a stale `base_vertex`, which the
+// arena's stable allocations keep right).
+fn write_args(slot: u32, f: CullFace, rec: u32, instances: u32, projector: bool) {
     let a = slot * 5u;
     var first_index = f.first_index;
     var index_count = f.index_count;
-    if (!index_range_fits(f)) {
+    var base_vertex = f.base_vertex;
+    if (projector && (f.bits & FACE_SHADOW_RANGE) != 0u && range_fits(f.shadow_first_index, f.shadow_index_count)) {
+        first_index = f.shadow_first_index;
+        index_count = f.shadow_index_count;
+        base_vertex = f.shadow_base_vertex;
+    } else if (!index_range_fits(f)) {
         first_index = min(first_index, frame.groups.z);
         index_count = 0u;
     }
     args[a] = index_count;
     args[a + 1u] = instances;
     args[a + 2u] = first_index;
-    args[a + 3u] = bitcast<u32>(f.base_vertex);
+    args[a + 3u] = bitcast<u32>(base_vertex);
     args[a + 4u] = rec;
 }
 
@@ -640,7 +733,9 @@ fn cs_scatter(
     let high = ranks[lid].high - own.high;
     let f = faces[i];
     let cap = frame.sizes.z;
-    let occlusion = (frame.sizes.w & F_OCCLUSION) != 0u;
+    let fl = frame.sizes.w;
+    let shelter_map = min(frame.groups.w, SPOT_MAPS - 1u);
+    let occlusion = (fl & F_OCCLUSION) != 0u;
     for (var b = 0u; b < BINS; b++) {
         if (((m >> b) & 1u) == 0u) {
             continue;
@@ -653,7 +748,9 @@ fn cs_scatter(
         }
         let rank = (packed >> ((b & 3u) * 8u)) & 0xffu;
         let pos = group_data[wid.x * BINS + b] + rank;
-        write_args(b * cap + pos, f, i, 1u);
+        // the projectors' bins, but not the rain's shelter map
+        let projector = b >= BIN_SPOT && b < BIN_SPOT + SPOT_MAPS && !((fl & F_SPOT_SHELTER) != 0u && b == BIN_SPOT + shelter_map);
+        write_args(b * cap + pos, f, i, 1u, projector);
         if (b < MAIN_BINS && occlusion) {
             // phase 1 prepass: what was visible last frame
             var was = 1u;
@@ -662,7 +759,7 @@ fn cs_scatter(
             }
             if (was != 0u) {
                 let k = atomicAdd(&counts[COUNT_PRE1 + b], 1u);
-                write_args((REGION_PRE1 + b) * cap + k, f, i, 1u);
+                write_args((REGION_PRE1 + b) * cap + k, f, i, 1u, false);
             }
         }
     }

@@ -27,6 +27,8 @@ pub mod pose_stand;
 #[path = "demo_poser.rs"]
 pub mod poser;
 
+#[path = "demo_projector_shade.rs"]
+pub mod projector_shade;
 #[path = "demo_texture_library.rs"]
 pub mod texture_library;
 
@@ -4776,7 +4778,11 @@ pub fn events() -> Vec<NetEvent> {
     // ordinary point light (fixed ids). The first lights the wall through
     // its image; the ground stays dark outside the frustums. `point`: the
     // projectors without their texture, as plain point lights, to compare.
-    if let Ok(mode) = std::env::var("AURORA_DEMO_PROJECTOR") {
+    // (`shade` and its variants are their own scenario, projector_shade.rs)
+    if let Some(mode) = std::env::var("AURORA_DEMO_PROJECTOR")
+        .ok()
+        .filter(|m| projector_shade::Variant::parse(m).is_none())
+    {
         let floor = height(cx, cy) + 0.35;
         let wall = [0.82, 0.82, 0.82, 1.0];
         add(prim(
@@ -8457,8 +8463,21 @@ pub fn projector_bench_done() -> bool {
         .is_some_and(|start| start.elapsed().as_secs() >= 50)
 }
 
+/// The roll and the factor of the field of view of the shade demo's camera
+/// path at `frame`, with the name of its phase; None outside it.
+pub fn projector_lens(frame: u64) -> Option<(f32, f32, &'static str)> {
+    // (the dolly keeps the camera's own lens)
+    let phase = projector_shade::phase_name(frame)?;
+    let pose = projector_shade::scenario_pose(frame)?;
+    Some((pose.roll, pose.fov_scale, phase))
+}
+
 /// Fixed framing of the #1494 offline fixture, or a repeatable camera sweep.
 pub fn projector_camera(frame: u64) -> Option<(Vec3, Vec3)> {
+    // (`shade`, `shade,axes`, `shade,close`: projector_shade.rs)
+    if let Some(pose) = projector_shade::scenario_pose(frame) {
+        return Some((pose.eye, pose.target));
+    }
     let mode = std::env::var("AURORA_DEMO_PROJECTOR").ok()?;
     if !mode.starts_with("cluster") {
         return None;

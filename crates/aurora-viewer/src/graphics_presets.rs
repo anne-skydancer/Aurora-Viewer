@@ -130,7 +130,7 @@ impl Preset {
                 max_particles: 2048,
                 shadow_quality: 0,
                 projector_shadows: false,
-                projector_shadow_limit: 2,
+                projector_shadow_limit: 4,
                 ssao: 0,
                 ao_method: 0,
                 gtao_quality: 2,
@@ -162,7 +162,7 @@ impl Preset {
                 max_particles: 4096,
                 shadow_quality: 0,
                 projector_shadows: false,
-                projector_shadow_limit: 2,
+                projector_shadow_limit: 8,
                 ssao: 1,
                 ao_method: 1,
                 gtao_quality: 0,
@@ -196,7 +196,7 @@ impl Preset {
                 max_particles: 4096,
                 shadow_quality: 2,
                 projector_shadows: false,
-                projector_shadow_limit: 2,
+                projector_shadow_limit: 15,
                 ssao: 1,
                 ao_method: 1,
                 gtao_quality: 2,
@@ -236,7 +236,7 @@ impl Preset {
                 max_particles: 8192,
                 shadow_quality: 4,
                 projector_shadows: true,
-                projector_shadow_limit: 2,
+                projector_shadow_limit: 15,
                 ssao: 2,
                 ao_method: 1,
                 gtao_quality: 3,
@@ -899,7 +899,7 @@ impl Values {
         s.projector_shadows = self.projector_shadows;
         s.projector_shadow_limit = self
             .projector_shadow_limit
-            .clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS as u8);
+            .clamp(1, aurora_render::projector_shadows::MAX_PROJECTOR_MAPS as u8);
         s.ssao = self.ssao;
         s.ao_method = self.ao_method;
         s.gtao_quality = self.gtao_quality;
@@ -931,6 +931,18 @@ impl Values {
 
 #[cfg(test)]
 mod tests {
+    /// The projectors' shadow budget of a level, 4 / 8 / 15 / 15 from Low to
+    /// Deluxe (15 projectors: the 16th map is the rain shelter's). The slider stays
+    /// the user's.
+    #[test]
+    fn the_levels_set_the_projector_shadow_budget() {
+        for (preset, limit) in [(Preset::Low, 4), (Preset::Medium, 8), (Preset::High, 15), (Preset::Deluxe, 15)] {
+            let mut s = Settings::default();
+            preset.apply(&mut s);
+            assert_eq!(s.projector_shadow_limit, limit, "{preset:?}");
+        }
+    }
+
     #[test]
     fn the_soft_shadows_are_off_in_every_level_at_the_default_size() {
         for preset in Preset::ALL {

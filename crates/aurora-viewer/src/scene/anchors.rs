@@ -904,7 +904,7 @@ impl Scene {
                 if (m.refresh || m.changed || every_centre)
                     && let (Some(mat), Some(g)) = (self.palettes.get(a.matrix as usize), self.gpu.get_mut(idx))
                 {
-                    g.center = Mat4::from_cols_array_2d(mat).transform_point3(g.local_center);
+                    g.follow_anchor(&Mat4::from_cols_array_2d(mat));
                     self.pick.set(idx, hover::PickEntry::of(g));
                 }
                 continue;
@@ -949,7 +949,9 @@ impl Scene {
                     let centre = Mat4::from_cols_array_2d(m).transform_point3(g.local_center);
                     let wide = g.posed.map(|_| (run.at, run.extent));
                     kept_centres.0 += 1;
+                    let origin = Mat4::from_cols_array_2d(m).transform_point3(g.local_origin);
                     if centre.distance(g.center) > 1e-4
+                        || origin.distance(g.origin) > 1e-4
                         || wide.is_some_and(|w| g.wide.is_none_or(|g| g.0.distance(w.0) > 1e-4 || g.1 != w.1))
                     {
                         kept_centres.1 += 1;
@@ -958,7 +960,7 @@ impl Scene {
                 continue;
             }
             if let (Some(m), Some(g)) = (self.palettes.get(a.matrix as usize), self.gpu.get_mut(idx)) {
-                g.center = Mat4::from_cols_array_2d(m).transform_point3(g.local_center);
+                g.follow_anchor(&Mat4::from_cols_array_2d(m));
                 // a rigged mesh: the CPU's lists test it with its skeleton
                 g.wide = g.posed.map(|_| (run.at, run.extent));
                 self.pick.set(idx, hover::PickEntry::of(g));

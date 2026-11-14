@@ -305,6 +305,11 @@ struct Entry {
     need_px: f32,
     away_px: f32,
     fixed_px: f32,
+    /// Texels an alpha-tested caster face covers in the shadow map of a
+    /// projector holding it (`note_usage_beam`): wanted like an in-view
+    /// size, lowered by memory pressure like one, decays like the others.
+    /// Camera-free: the beam, not the view, decides it.
+    beam_px: f32,
     /// Pixels in view `want` was last computed from (0 before the first
     /// time): unlike `need_px`, it does not decay between two computations.
     seen_px: f32,
@@ -420,6 +425,7 @@ impl Entry {
             need_px: 0.0,
             away_px: 0.0,
             fixed_px: 0.0,
+            beam_px: 0.0,
             seen_px: 0.0,
             max_px: cap_px(max_resolution),
             boosted: false,
@@ -480,7 +486,10 @@ impl Entry {
     /// computed from, or what was noted since if that is more (a texture
     /// just arrived has only that). 0: not seen yet.
     fn px_now(&self) -> f32 {
-        self.seen_px.max(self.capped(self.need_px)).max(self.fixed_px)
+        self.seen_px
+            .max(self.capped(self.need_px))
+            .max(self.capped(self.beam_px))
+            .max(self.fixed_px)
     }
 
     /// A texture used for the first time has its size on screen noted in
@@ -489,7 +498,7 @@ impl Entry {
     /// once, for a file of unknown size as that pass would compute it,
     /// instead of the level of a new entry.
     fn want_before_the_first_pass(&mut self) {
-        let px = self.capped(self.need_px).max(self.fixed_px);
+        let px = self.capped(self.need_px).max(self.capped(self.beam_px)).max(self.fixed_px);
         if self.seen_px <= 0.0 && px > 0.0 && !self.keep_pixels {
             self.want = discard_for(
                 full_size(self).map_or(512, |(w, h)| w.max(h)) as f32,
@@ -914,6 +923,9 @@ pub struct TextureStats {
 pub struct DemoSource {
     pub has: fn(&Uuid) -> bool,
     pub texels: fn(&Uuid, u8) -> Vec<(u32, u32, Vec<u8>)>,
+    /// Alpha class of its texels and whether the alpha channel is used
+    /// (what a decode of the real file would tell).
+    pub alpha: (AlphaKind, bool),
 }
 
 /// Discard level of a texture of `full` pixels (its largest side) to cover
@@ -944,7 +956,7 @@ fn capped_discard(full: f32, max_resolution: u32, levels: Option<u8>) -> u8 {
 /// caps what is left once divided, as in the Legacy Viewer (`capped`): at
 /// 2048 a texture seen close keeps its level under pressure.
 fn wanted(full: f32, levels: Option<u8>, e: &Entry, (in_view, away): (f32, f32)) -> (u8, u8) {
-    let seen = e.fixed_px.max(e.capped(e.need_px / in_view));
+    let seen = e.fixed_px.max(e.capped(e.need_px / in_view)).max(e.capped(e.beam_px / in_view));
     let near = seen.max(e.capped(e.away_px / away));
     (
         discard_for(full, seen, levels),
@@ -2408,6 +2420,54 @@ impl TextureStreamer {
         }
     }
 
+    /// Record that a texture covers about `px` texels in the shadow map of a
+    /// projector that holds a caster face wearing it (alpha-tested faces
+    /// only, the base texture): wanted like an in-view size, though no
+    /// camera sees it, and lowered by memory pressure like one. Unlike
+    /// `note_usage_away` it loads. The Legacy Viewer notes texture sizes
+    /// from the world camera alone (processTextureStats,
+    /// indra/newview/llviewertexture.cpp, asserts it is not a shadow pass):
+    /// a deliberate difference, see `beam_detail`.
+    #[inline]
+    pub fn note_usage_beam(&mut self, id: &Uuid, px: f32) {
+        if let Some(e) = self.entries.get_mut(id)
+            && px > e.beam_px
+        {
+            e.beam_px = px;
+        }
+    }
+
+    /// Textures a projector's floor holds at a finer level than the camera
+    /// alone would ask for, and the bytes that costs more: what
+    /// `AURORA_PROJECTOR_TRACE` and the profile report of the floor (a
+    /// statistic to measure on the grid, decision D6: no cap).
+    pub fn beam_floor(&self) -> (usize, u64) {
+        let mut out = (0, 0);
+        for e in self.entries.values().filter(|e| e.beam_px > 0.0 && e.refs > 0) {
+            let camera = e.capped(e.need_px).max(e.fixed_px);
+            if e.capped(e.beam_px) <= camera {
+                continue;
+            }
+            let full = full_size(e).map_or(512, |(w, h)| w.max(h)) as f32;
+            let alone = discard_for(full, camera, e.info.map(|i| i.levels));
+            if let Some(d) = e.decoded.filter(|d| *d < alone) {
+                out.0 += 1;
+                out.1 += bytes_at(e, d).saturating_sub(bytes_at(e, alone));
+            }
+        }
+        out
+    }
+
+    /// The discard level a map asks of a texture covering `px` texels in it,
+    /// as the floor would load it: from the beam alone, so the same whatever
+    /// the camera does (`beam_floor` reads what is held; this is what is
+    /// asked). None while the texture's size is not known.
+    pub fn beam_level(&self, id: &Uuid, px: f32) -> Option<u8> {
+        let e = self.entries.get(id)?;
+        let (w, h) = full_size(e)?;
+        Some(discard_for(w.max(h) as f32, e.capped(px), e.info.map(|i| i.levels)))
+    }
+
     /// Like `note_usage`, for what memory pressure never lowers (as
     /// Firestorm's boosted textures: HUDs, sky, terrain).
     #[inline]
@@ -2469,7 +2529,7 @@ impl TextureStreamer {
             let full_px = full_size(e).map_or(512, |(w, h)| w.max(h)) as f32;
             let levels = e.info.map(|i| i.levels);
             let (want, keep) = wanted(full_px, levels, e, dropped);
-            let in_view = e.need_px > 0.0 || e.fixed_px > 0.0;
+            let in_view = e.need_px > 0.0 || e.fixed_px > 0.0 || e.beam_px > 0.0;
             e.want = if full && in_view && e.source == TexSource::Asset { 0 } else { want };
             // (still on its way: there is somewhere to download it from, or
             // what is held of it has more to give)
@@ -2485,7 +2545,7 @@ impl TextureStreamer {
             {
                 pending += 1;
             }
-            e.seen_px = e.fixed_px.max(e.capped(e.need_px / dropped.0));
+            e.seen_px = e.fixed_px.max(e.capped(e.need_px / dropped.0)).max(e.capped(e.beam_px / dropped.0));
             // Lowered to the maximum resolution, under memory pressure or
             // not, as LLViewerLODTexture::processTextureStats scales a
             // texture down once it holds a finer level than it wants (the
@@ -2550,6 +2610,7 @@ impl TextureStreamer {
             e.need_px *= 0.5;
             e.away_px *= 0.5;
             e.fixed_px *= 0.5;
+            e.beam_px *= 0.5;
             // (a preview closed: what it noted is capped from now on)
             e.boosted = false;
             // (a finer level wanted: `update` hears of it)
@@ -2716,7 +2777,7 @@ impl TextureStreamer {
                     // a transcoded chain shows it at once, and the level it
                     // needs is read when known (the default level would load
                     // every texture of a region at a quarter of its size)
-                    let level = if e.need_px > 0.0 {
+                    let level = if e.need_px > 0.0 || e.beam_px > 0.0 {
                         e.want
                     } else {
                         aurora_assets::j2k::MAX_DISCARD_LEVEL
@@ -2752,16 +2813,7 @@ impl TextureStreamer {
                         *decodes += 1;
                         let (want, pool) = (e.want, staging.clone());
                         jobs.spawn_or(
-                            move || {
-                                texture_result(
-                                    id,
-                                    want,
-                                    (source.texels)(&id, want),
-                                    (AlphaKind::Opaque, false),
-                                    None,
-                                    pool.as_deref(),
-                                )
-                            },
+                            move || texture_result(id, want, (source.texels)(&id, want), source.alpha, None, pool.as_deref()),
                             move || JobResult::TextureFailed { id },
                         );
                     }
@@ -3163,7 +3215,7 @@ impl TextureStreamer {
                         held: false,
                     },
                     e.decoded.is_none(),
-                    e.capped(e.need_px).max(e.fixed_px),
+                    e.capped(e.need_px).max(e.capped(e.beam_px)).max(e.fixed_px),
                 );
                 Self::settle(&mut self.todo, &mut self.counts, id, e);
             }
@@ -4477,6 +4529,7 @@ mod tests {
             need_px,
             away_px: 0.0,
             fixed_px: 0.0,
+            beam_px: 0.0,
             seen_px: 0.0,
             max_px: cap_px(crate::settings::MAX_TEXTURE_RESOLUTION),
             boosted: false,
@@ -4956,6 +5009,91 @@ mod tests {
         let e = &s.entries[&Uuid::from_u128(1)];
         assert_eq!((e.seen_px, e.need_px), (300.0, 150.0));
         assert_eq!(e.px_now(), 300.0);
+    }
+
+    #[test]
+    fn a_beam_size_loads_a_texture_no_camera_sees() {
+        let id = Uuid::from_u128(1);
+        let mut s = pressed(0, vec![(1, large(None))]);
+        s.recompute_wants();
+        let unseen = s.entries[&id].want;
+        s.note_usage_beam(&id, 512.0);
+        s.recompute_wants();
+        let e = &s.entries[&id];
+        assert!(e.want < unseen, "wants {} not coarser than {unseen}", e.want);
+        let mut twin = pressed(0, vec![(1, large(None))]);
+        twin.note_usage(&id, 512.0);
+        twin.recompute_wants();
+        assert_eq!(e.want, twin.entries[&id].want);
+        // the camera noted nothing: it is the beam alone
+        assert_eq!((e.need_px, e.away_px), (0.0, 0.0));
+        // a smaller size does not lower what was noted
+        s.note_usage_beam(&id, 100.0);
+        // (512 decayed to 256 by the pass)
+        assert_eq!(s.entries[&id].beam_px, 256.0);
+    }
+
+    #[test]
+    fn memory_pressure_lowers_a_beam_size_like_an_in_view_one() {
+        let id = Uuid::from_u128(1);
+        for step in 0..=texture_budget::MAX_PRESSURE {
+            let mut a = pressed(step, vec![(1, large(Some(0)))]);
+            a.note_usage_beam(&id, 4000.0);
+            a.recompute_wants();
+            let mut b = pressed(step, vec![(1, large(Some(0)))]);
+            b.note_usage(&id, 4000.0);
+            b.recompute_wants();
+            assert_eq!(a.entries[&id].want, b.entries[&id].want, "step {step}");
+            assert_eq!(a.entries[&id].seen_px, b.entries[&id].seen_px, "step {step}");
+        }
+        let at = |step: u8| {
+            let mut s = pressed(step, vec![(1, large(Some(0)))]);
+            s.note_usage_beam(&id, 4000.0);
+            s.recompute_wants();
+            s.entries[&id].want
+        };
+        assert!(at(texture_budget::MAX_PRESSURE) > at(0), "the highest pressure lowers it");
+    }
+
+    #[test]
+    fn a_beam_size_decays_when_the_face_leaves_every_beam() {
+        let id = Uuid::from_u128(1);
+        let mut s = pressed(0, vec![(1, large(Some(0)))]);
+        s.note_usage_beam(&id, 2000.0);
+        let mut wants = Vec::new();
+        for _ in 0..8 {
+            s.recompute_wants();
+            wants.push(s.entries[&id].want);
+        }
+        assert!(wants.windows(2).all(|w| w[0] <= w[1]), "never finer again: {wants:?}");
+        assert!(wants[7] > wants[0], "coarser after a few passes: {wants:?}");
+        assert!(s.entries[&id].beam_px < 20.0);
+    }
+
+    #[test]
+    fn a_beam_size_is_noted_whatever_the_camera_does() {
+        let id = Uuid::from_u128(1);
+        let run = |camera_px: f32, away: f32| {
+            let mut s = pressed(2, vec![(1, large(Some(0)))]);
+            s.note_usage_beam(&id, 700.0);
+            // the camera: far, near, behind (away only), or nothing
+            if camera_px > 0.0 {
+                s.note_usage(&id, camera_px);
+            }
+            if away > 0.0 {
+                s.note_usage_away(&id, away);
+            }
+            s.recompute_wants();
+            (s.entries[&id].beam_px, s.entries[&id].want)
+        };
+        let (floor_px, floor_want) = run(0.0, 0.0);
+        for (px, away) in [(10.0, 0.0), (300.0, 20.0), (0.0, 900.0), (4000.0, 4000.0)] {
+            let (beam_px, want) = run(px, away);
+            assert_eq!(beam_px, floor_px, "camera {px} away {away}");
+            // the camera can only ask for a finer level, never a coarser
+            // one than the beam's floor
+            assert!(want <= floor_want, "camera {px} away {away}: {want} > {floor_want}");
+        }
     }
 
     #[test]

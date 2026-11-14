@@ -671,6 +671,11 @@ pub struct DrawLists {
     /// Per `blend_under_water` entry: the same sidedness rule before water.
     pub blend_under_double_sided: Vec<bool>,
     pub shadow_casters: Vec<ShadowCaster>,
+    /// CPU lists only: the casters of the projectors' shadow maps, every
+    /// object with the camera's reach left out (a projector's shadow is the
+    /// projector's, not the camera's); the renderer keeps the ones in each
+    /// beam that cover a texel of its map (`gpu_cull::spot_resolves`).
+    pub spot_casters: Vec<ShadowCaster>,
     /// Aurora Weather, CPU lists only: what the rain's shelter map takes in
     /// its square around the camera, shadows or not: what stands still
     /// (no avatar, worn, rigged or physical object), blended faces too (a
@@ -680,6 +685,11 @@ pub struct DrawLists {
     /// casters, else with the terrain's own alpha test (`fs_shadow_terrain`),
     /// never through `fs_shadow`.
     pub terrain_shadow_casters: Vec<ShadowCaster>,
+    /// The terrain chunks of the projectors' shadow maps: every loaded one,
+    /// the camera's reach (`terrain_shadow_casters` stops at 1.5 draw
+    /// distances) left out; the renderer keeps the ones in each beam. Empty
+    /// without a projector that casts shadows.
+    pub spot_terrain_casters: Vec<ShadowCaster>,
     /// Opaque and alpha-masked draws for the planar reflection passes
     /// (water and mirror); drawn without face culling, alpha tested.
     /// With their bounds: each reflection pass culls them to its own frustum.
@@ -860,8 +870,10 @@ impl DrawLists {
         self.blend_depth_runs.clone_from(&src.blend_depth_runs);
         self.blend_depth_quiet.clone_from(&src.blend_depth_quiet);
         self.shadow_casters.clone_from(&src.shadow_casters);
+        self.spot_casters.clone_from(&src.spot_casters);
         self.shelter_casters.clone_from(&src.shelter_casters);
         self.terrain_shadow_casters.clone_from(&src.terrain_shadow_casters);
+        self.spot_terrain_casters.clone_from(&src.spot_terrain_casters);
         self.reflection.clone_from(&src.reflection);
         self.reflection_blend.clone_from(&src.reflection_blend);
         self.reflection_blend_rigged = src.reflection_blend_rigged;
@@ -922,8 +934,10 @@ impl DrawLists {
         self.blend_depth_runs.clear();
         self.blend_depth_quiet.clear();
         self.shadow_casters.clear();
+        self.spot_casters.clear();
         self.shelter_casters.clear();
         self.terrain_shadow_casters.clear();
+        self.spot_terrain_casters.clear();
         self.reflection.clear();
         self.reflection_blend.clear();
         self.reflection_blend_rigged = 0;
@@ -1126,6 +1140,15 @@ pub struct Projector {
     pub ambiance: f32,
     /// Texture table slot of the projected texture.
     pub texture: u32,
+    /// A sphere (xyz, radius) around the shadow map's frustum, from the apex
+    /// to its far plane: what a view must reach for the map to be seen.
+    pub bound: [f32; 4],
+    /// The smaller of the tangents of half the vertical and half the
+    /// horizontal field of view: the direction in which the shadow map has
+    /// the most texels per metre (it covers `2 x distance x half_tan` metres
+    /// of that side there), so a caster is dropped only when it covers less
+    /// than a texel both ways.
+    pub half_tan: f32,
     /// World to the clip space of the projector's shadow map (depth 0 at
     /// its near plane, 1 at its reach), as LLPipeline::generateSunShadow
     /// draws the shadow of a projector.
@@ -1179,7 +1202,13 @@ impl Projector {
             Vec4::new(0.0, 0.0, sf / (sn - sf), -1.0),
             Vec4::new(0.0, 0.0, sn * sf / (sn - sf), 0.0),
         );
+        // a sphere on the axis, half way to the far plane, round its corners
+        let half_depth = sf * 0.5;
+        let corner = (aspect.hypot(1.0) / f) * sf;
+        let bound_center = origin + direction * half_depth;
+        let bound_radius = half_depth.hypot(corner).max(half_depth);
         Projector {
+            bound: [bound_center.x, bound_center.y, bound_center.z, bound_radius],
             shadow_matrix: shadow_perspective * light_to_world.inverse(),
             matrix: bias * perspective * light_to_world.inverse(),
             origin,
@@ -1189,6 +1218,7 @@ impl Projector {
             focus: params.y,
             ambiance: params.z,
             texture,
+            half_tan: (fov * 0.5).tan() * aspect.min(1.0),
         }
     }
 }

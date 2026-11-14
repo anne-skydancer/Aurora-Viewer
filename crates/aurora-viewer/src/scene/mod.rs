@@ -11,6 +11,7 @@ pub mod avatar;
 pub mod avatar_snow;
 pub mod avatar_studio;
 pub mod banlines;
+mod beam_detail;
 pub mod blend_order;
 mod blender_live;
 pub mod body_physics;
@@ -56,6 +57,7 @@ pub mod picking;
 mod plants;
 pub mod portals;
 pub mod probes;
+pub mod projector_cache;
 mod rain_ground;
 pub mod rain_sound;
 pub mod render_types;
@@ -383,6 +385,10 @@ pub struct FaceDraw {
     /// Part of a system avatar body: its pass follows the avatar pool.
     pub system: Option<SystemPart>,
     pub first_person_hidden: bool,
+    /// Index range (first index, count, base vertex) this face draws in the
+    /// projectors' shadow maps, from the object's shadow geometry
+    /// (beam_detail.rs); None: the camera's (`cmd`).
+    pub shadow: Option<(u32, u32, i32)>,
 }
 
 impl FaceDraw {
@@ -425,9 +431,28 @@ pub struct ObjGpu {
     pub material_ids: Vec<Uuid>,
     pub geom: Option<GeomKey>,
     pub wanted_geom: Option<GeomKey>,
+    /// The geometry its faces draw in the projectors' shadow maps, another
+    /// level of detail of its shape than `geom`'s (beam_detail.rs); held
+    /// like `geom`.
+    pub shadow_geom: Option<GeomKey>,
     pub lod: u8,
     pub center: Vec3,
+    /// The origin of the geometry's space (the centre of its unit box),
+    /// placed like `center`; unlike it, no level of detail moves it, so the
+    /// projectors' shadow level reads it (beam_detail.rs). A rigged mesh
+    /// or an avatar: equal to `center`.
+    pub origin: Vec3,
     pub radius: f32,
+    /// Half the diagonal of its scale box (`beam_detail::radius_of_scale`):
+    /// with `origin`, the sphere the projectors size it by (`beam_sphere`).
+    /// 0 until it is placed, and for an avatar.
+    pub beam_radius: f32,
+    /// The projectors' maps take it as a caster with `origin` and
+    /// `beam_radius` (`member_sphere`): a static prim, sculpt or mesh that
+    /// keeps to its unit box. The others (rigged, avatar, HUD, flexible,
+    /// plant, sculpt placeholder, a sheared prim) are taken with the
+    /// camera's sphere.
+    pub beam_own: bool,
     pub tex_generation: u64,
     /// Avatars: bake slots used by worn attachments (bakes on mesh), whose
     /// system body parts are hidden.
@@ -485,6 +510,8 @@ pub struct ObjGpu {
     /// Anchored: `center` in the anchor's space (`center` itself is brought
     /// up to date from the anchor at each frame).
     pub local_center: Vec3,
+    /// Anchored: `origin` in the anchor's space.
+    pub local_origin: Vec3,
     /// Anchored rigged mesh: what the GPU poses its bounds from.
     pub posed: Option<anchors::Posed>,
     /// Anchored rigged mesh: sphere of its skeleton this frame, which the
@@ -494,6 +521,13 @@ pub struct ObjGpu {
 }
 
 impl ObjGpu {
+    /// Bring `center` and `origin` up to date from the anchor's matrix
+    /// (anchors.rs), the way the sync placed them.
+    pub fn follow_anchor(&mut self, anchor: &Mat4) {
+        self.center = anchor.transform_point3(self.local_center);
+        self.origin = anchor.transform_point3(self.local_origin);
+    }
+
     /// Its wanted geometry is bound, or the sphere placeholder stands in
     /// for a sculpt whose map is missing (nothing more is coming).
     pub fn geometry_built(&self) -> bool {
@@ -501,6 +535,25 @@ impl ObjGpu {
             (Some(GeomKey::Sculpt { hash, lod }), Some(GeomKey::SculptPlaceholder { hash: h, lod: l })) => hash == h && lod == l,
             (wanted, geom) => wanted.is_none_or(|k| geom == Some(k)) && self.sculpt_wait.is_none(),
         }
+    }
+
+    /// The sphere the projectors size the object by: its shadow level, its
+    /// texture floor and the trace (beam_detail.rs). The origin of its
+    /// geometry's space and half the diagonal of its scale box, which no
+    /// level of detail moves; the bounds' sphere until it is placed.
+    pub fn beam_sphere(&self) -> (Vec3, f32) {
+        (self.origin, if self.beam_radius > 0.0 { self.beam_radius } else { self.radius })
+    }
+
+    /// The sphere the projectors' maps take their casters with, on the GPU
+    /// (`CullObject::beam`) and in the CPU lists: `beam_sphere` for an
+    /// object whose geometry lies in that sphere at every level
+    /// (`beam_own`: a static prim, sculpt or mesh that keeps to its unit box,
+    /// `beam_detail::prim_in_unit_box`, `bounds_in_sphere`), where it is the
+    /// same for all of them; the camera's sphere for the rest, which still
+    /// follows the camera's level there.
+    pub fn member_sphere(&self) -> (Vec3, f32) {
+        if self.beam_own { self.beam_sphere() } else { self.sphere() }
     }
 
     /// Culling sphere: the bounds, or for an avatar its posed body (2.5 m
@@ -559,8 +612,16 @@ impl ObjGpu {
                 fl |= bit;
             }
         }
+        // the beam sphere: in the world, or in the anchor's space like `sphere`
+        // (0 radius: the camera's sphere stands; a posed object has no own)
+        let beam = match (self.beam_own && posed.is_none(), self.anchor) {
+            (false, _) => [0.0; 4],
+            (true, Some(_)) => self.local_origin.extend(self.beam_radius).to_array(),
+            (true, None) => self.origin.extend(self.beam_radius).to_array(),
+        };
         CullObject {
             sphere,
+            beam,
             flags: fl,
             avatar: avatar.map_or(NO_OBJECT, |a| a as u32),
             state: self.cull_state,
@@ -611,6 +672,10 @@ struct CullCtx<'a> {
     reflection_distance: f32,
     shadows: bool,
     reflections: bool,
+    /// Objects may cast into the projectors' shadow maps (the sun's shadows
+    /// and the projectors' are on and the scene has a projector): `ObjVis::spot_casts`, which the
+    /// camera's reach does not limit.
+    spot_casts: bool,
     /// The CPU lists are built: the rain's shelter map takes what stands
     /// still in its square, shadows or not (`DrawLists::shelter_casters`).
     shelter: bool,
@@ -629,6 +694,13 @@ struct ObjVis {
     probes: bool,
     /// In the rain's shelter map (`CullCtx::shelter`).
     shelters: bool,
+    /// May cast into a projector's shadow map (`CullCtx::spot_casts`): the
+    /// camera's draw distance, shadow distance and small object culling do
+    /// not apply, a projector's shadow is the projector's.
+    spot_casts: bool,
+    /// Passed the camera's tests (the texture usage, blend order and
+    /// selection are the camera's business, not only a projector's).
+    seen: bool,
 }
 
 /// Object tests of the CPU lists, the same as `face_mask` in cull.wgsl:
@@ -660,8 +732,20 @@ fn object_visibility(
     }
     let (sc, sr) = g.sphere();
     let d = (sc - ctx.view.eye).length();
-    if d - sr > ctx.draw_distance && !g.is_avatar {
-        return None;
+    // (beyond the draw distance only a projector's shadow map may want it)
+    let beyond = d - sr > ctx.draw_distance && !g.is_avatar;
+    let spot = ObjVis {
+        sphere: (sc, sr),
+        in_view: false,
+        casts: false,
+        reflects: false,
+        probes: false,
+        shelters: false,
+        spot_casts: ctx.spot_casts,
+        seen: false,
+    };
+    if beyond {
+        return ctx.spot_casts.then_some(spot);
     }
     let in_view = ctx.view.sphere_visible(sc, sr);
     let casts = ctx.shadows && d - sr < ctx.shadow_distance;
@@ -678,20 +762,21 @@ fn object_visibility(
         && avatar.is_none()
         && (sc - ctx.view.eye).abs().cmple(half).all();
     if !in_view && !casts && !reflects && !probes && !shelters {
-        return None;
+        return ctx.spot_casts.then_some(spot);
     }
     // tiny objects far away are culled (LL-like small object culling)
     let large = ctx.view.pixel_size(sc, sr) >= 1.5 || g.is_avatar;
     if !large && !probes {
-        return None;
+        return ctx.spot_casts.then_some(spot);
     }
     Some(ObjVis {
-        sphere: (sc, sr),
         in_view: in_view && large,
         casts: casts && large,
         reflects: reflects && large,
         probes,
         shelters: shelters && large,
+        seen: true,
+        ..spot
     })
 }
 
@@ -712,7 +797,7 @@ fn note_face_usage(usage: &mut Vec<(Uuid, f32, bool)>, f: &FaceDraw, px: f32, in
 
 /// GPU face table entry of a face of object `idx`.
 fn cull_face(f: &FaceDraw, idx: usize, first: bool) -> CullFace {
-    CullFace {
+    let mut face = CullFace {
         index_count: f.cmd.index_count,
         first_index: f.cmd.first_index,
         base_vertex: f.cmd.base_vertex,
@@ -727,8 +812,10 @@ fn cull_face(f: &FaceDraw, idx: usize, first: bool) -> CullFace {
             } else {
                 0
             },
-        _pad: [0; 3],
-    }
+        shadow: [0; 3],
+    };
+    face.set_shadow_range(f.shadow);
+    face
 }
 
 /// Faces listed by the CPU even with the GPU lists: blended (sorted back
@@ -784,6 +871,12 @@ pub struct SceneStats {
     pub flexies_held: usize,
     /// Objects that move by themselves placed from a mover (anchors.rs).
     pub movers: usize,
+    /// Geometry held only for the projectors' shadow maps, the textures their
+    /// floor holds finer than the camera would, and what that costs, in KB
+    /// (beam_detail.rs), as of the last usage visit.
+    pub shadow_geom_kb: usize,
+    pub beam_textures: usize,
+    pub beam_texture_kb: usize,
     /// Skeletons built again this frame (a shape, an attachment or their
     /// age changed), out of `posed` (AURORA_PROFILE).
     pub skeletons_rebuilt: usize,
@@ -997,6 +1090,15 @@ pub struct Scene {
     /// these instead of every object each frame. May hold removed indices;
     /// readers check the object again.
     pub light_objects: std::collections::BTreeSet<usize>,
+    /// The ones of them that project a texture (a projector may cast a
+    /// shadow); same upkeep and caveat as `light_objects`.
+    projector_objects: std::collections::BTreeSet<usize>,
+    /// Projectors cast shadows (the setting, a nonzero budget, the sun's
+    /// shadows on), as of the last light list (`lights.rs`).
+    projector_shadows_on: bool,
+    /// The projectors holding a shadow map as of the last frame: what the
+    /// shadow level of detail of the casters follows (beam_detail.rs).
+    beams: beam_detail::Beams,
     /// Texture each projector of the frame's light list holds (object
     /// index: texture, slot), see `lights.rs`.
     light_textures: HashMap<usize, (Uuid, u32)>,
@@ -1004,7 +1106,11 @@ pub struct Scene {
     /// built in their room instead of new ones each frame (`lights.rs`).
     light_scratch: lights::Scratch,
     /// The projectors that cast shadows (`lights.rs`).
-    spot_shadows: lights::SpotShadowSlots,
+    spot_shadows: projector_cache::ProjectorSlots,
+    /// The frame and the phase of the camera path of the demo
+    /// `AURORA_DEMO_PROJECTOR=shade,axes`, named in the `projector casters:`
+    /// trace lines (empty outside it).
+    pub projector_phase: (u64, &'static str),
     /// Rain prototype: the terrain's heights around the camera
     /// (`rain_ground.rs`).
     rain_ground: rain_ground::RainGroundCache,
@@ -1703,9 +1809,13 @@ impl Scene {
             bom_stale: Default::default(),
             list_index: Default::default(),
             light_objects: Default::default(),
+            projector_objects: Default::default(),
+            projector_shadows_on: false,
+            beams: Default::default(),
             light_textures: HashMap::new(),
             light_scratch: Default::default(),
             spot_shadows: Default::default(),
+            projector_phase: (0, ""),
             rain_ground: Default::default(),
             mirror_objects: Default::default(),
             selection_wire: Default::default(),
@@ -2288,6 +2398,9 @@ impl Scene {
             self.textures.release(&t);
         }
         if let Some(k) = g.geom.take() {
+            self.geom_unref(k);
+        }
+        if let Some(k) = g.shadow_geom.take() {
             self.geom_unref(k);
         }
         for k in g.morph_geoms.drain(..) {
@@ -3058,6 +3171,9 @@ impl Scene {
             self.pick.changed(idx);
         }
         touched.clear();
+        // (after the released slots: a slot reused this frame must not give
+        // its old geometry's key to its new object)
+        self.refresh_beam_details(renderer, world);
         self.touched_tmp = touched;
         self.sync_parcel_crossings(world);
         step(&mut slow, "touched");
@@ -3426,6 +3542,17 @@ impl Scene {
         // (new faces: what the cursor is over may have changed)
         self.pick.changed(idx);
         self.fresh_usage.insert(idx);
+        // (the shadow ranges follow the faces through a rebuild at another
+        // camera level: the shadow geometry is of the same shape, kept; one
+        // of another shape is let go)
+        if let Some(k) = g.shadow_geom
+            && !g.geom.is_some_and(|c| beam_detail::same_shape(c, k))
+        {
+            g.shadow_geom = None;
+            self.geom_unref(k);
+        }
+        let shadow = g.shadow_geom.and_then(|k| self.geom_ready(&k));
+        beam_detail::apply(&mut g.faces, shadow.as_deref());
         let alpha = &self.textures.alpha_by_slot;
         let channel = &self.textures.alpha_channel_by_slot;
         let mut last_slot = None;
@@ -3458,6 +3585,17 @@ impl Scene {
 
     /// Keep `light_objects` in step with an object's light parameters.
     fn note_light(&mut self, world: &World, idx: usize) {
+        let projector = world
+            .objects
+            .get(idx)
+            .is_some_and(|o| o.extra.light.is_some() && o.visual_light_image().is_some_and(|i| !i.texture.is_nil()));
+        if projector != self.projector_objects.contains(&idx) {
+            if projector {
+                self.projector_objects.insert(idx);
+            } else {
+                self.projector_objects.remove(&idx);
+            }
+        }
         let light = world.objects.get(idx).is_some_and(|o| o.extra.light.is_some());
         if let Some(g) = self.gpu.get_mut(idx)
             && g.is_light != light
@@ -3495,9 +3633,13 @@ impl Scene {
             }
         }
         g.center = m.center;
+        g.origin = m.origin;
         g.radius = m.radius;
+        g.beam_radius = m.beam_radius;
+        g.beam_own = m.beam_own;
         g.anchor = m.anchor;
         g.local_center = m.local_center;
+        g.local_origin = m.local_origin;
         if m.changed {
             if let Some(still) = &mut self.still
                 && !g.hud
@@ -3874,7 +4016,10 @@ impl Scene {
             // brings it back when its geometry can progress.
             let g = &mut self.gpu[idx];
             g.center = pos;
+            g.origin = pos;
             g.radius = radius;
+            g.beam_radius = 0.0;
+            g.beam_own = false;
             g.anchor = None;
             g.posed = None;
             g.wide = None;
@@ -3894,11 +4039,15 @@ impl Scene {
         let Placement {
             model,
             center,
+            origin,
             radius,
+            beam_radius,
+            beam_own,
             rigged,
             skeleton_owner,
             anchor,
             local_center,
+            local_origin,
             posed_rest,
         } = self
             .sync_ctx(world, &renderer.records, view.eye, now)
@@ -3968,9 +4117,13 @@ impl Scene {
         });
         let g = &mut self.gpu[idx];
         g.center = center;
+        g.origin = origin;
         g.radius = radius;
+        g.beam_radius = beam_radius;
+        g.beam_own = beam_own;
         g.anchor = anchor;
         g.local_center = local_center;
+        g.local_origin = local_origin;
         g.posed = posed;
         g.wide = g.wide.filter(|_| posed.is_some());
         g.rigged = rigged;
@@ -3982,6 +4135,230 @@ impl Scene {
             o.render.needs_records = false;
             o.shape_dirty = false;
             o.material_dirty = false;
+        }
+        self.refresh_shadow_geom(renderer, world, idx);
+    }
+
+    /// The usage visit's slice (one object in 30, as the textures' usage is
+    /// noted): the shadow level of each object again, since the projectors
+    /// may have moved or changed owner of their map.
+    fn refresh_beam_details(&mut self, renderer: &mut Renderer, world: &World) {
+        let phase = (self.frame % 30) as usize;
+        for idx in (phase..self.gpu.len()).step_by(30) {
+            self.refresh_shadow_geom(renderer, world, idx);
+        }
+        if phase == 0 {
+            self.note_beam_costs();
+        }
+    }
+
+    /// What the shadow levels and the texture floor hold, for the trace and
+    /// the profile (no cap, a statistic to measure on the grid):
+    /// the geometry only the projectors' maps reference, and what the texture
+    /// floor holds more than the camera would (`TextureStreamer::beam_floor`).
+    fn note_beam_costs(&mut self) {
+        use aurora_render::types::Vertex;
+        let mut held: HashMap<GeomKey, u32> = HashMap::new();
+        for g in &self.gpu {
+            if let Some(k) = g.shadow_geom {
+                *held.entry(k).or_default() += 1;
+            }
+        }
+        let bytes: u64 = held
+            .iter()
+            .filter(|(k, n)| self.geoms.get(*k).is_some_and(|e| e.refs == **n))
+            .filter_map(|(k, _)| self.geom_ready(k))
+            .map(|geom| -> u64 {
+                // (the arena's index buffer is u16)
+                geom.faces
+                    .iter()
+                    .flatten()
+                    .map(|a| a.vertex_count as u64 * std::mem::size_of::<Vertex>() as u64 + a.index_count as u64 * 2)
+                    .sum()
+            })
+            .sum();
+        let (textures, texture_bytes) = self.textures.beam_floor();
+        self.stats.shadow_geom_kb = (bytes >> 10) as usize;
+        self.stats.beam_textures = textures;
+        self.stats.beam_texture_kb = (texture_bytes >> 10) as usize;
+    }
+
+    /// `AURORA_PROJECTOR_TRACE`: per projector map, how many casters stand in
+    /// it and a hash of what each is drawn with there (object, level of
+    /// detail of its geometry in the map, level of its alpha-tested
+    /// textures, the coarser of the level resident and the level the map asks
+    /// for: `beam_detail::hash_level`, which is blind to a finer level the
+    /// camera loaded; `tex=<resident>/<asked>` shows that one). It stays the
+    /// same while nothing in the beam moves, whatever the camera does
+    /// (beam_detail.rs); rigged meshes, avatars and HUDs keep the camera's
+    /// level and are left out.
+    pub fn trace_projector_casters(&self, world: &World, eye: Vec3) {
+        let mut line = String::new();
+        let blend_casts = aurora_render::shadow_cull::blend_casts();
+        for slot in self.beams.slots() {
+            let mut levels = std::collections::BTreeSet::new();
+            let (mut n, mut hash) = (0u32, 0xcbf2_9ce4_8422_2325u64);
+            let mut feed = |bytes: &[u8]| {
+                for b in bytes {
+                    hash = (hash ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+                }
+            };
+            for (idx, g) in self.gpu.iter().enumerate() {
+                if g.faces.is_empty() || !beam_detail::eligible(g) {
+                    continue;
+                }
+                let Some(o) = world.objects.get(idx) else {
+                    continue;
+                };
+                // (the sphere the maps take it with, as the bins and the CPU lists)
+                let (origin, radius) = g.member_sphere();
+                if !self.beams.holding(origin, radius).any(|s| s == slot) {
+                    continue;
+                }
+                n += 1;
+                feed(o.full_id.as_bytes());
+                // (a mesh by the block it draws: the camera's key may ask for
+                // a level its asset lacks)
+                let level = g.shadow_geom.or(g.geom).and_then(|k| match k {
+                    GeomKey::Mesh { id, lod } => self.meshes.resolved_lod(&id, lod).or(Some(lod)),
+                    k => beam_detail::level_of(k),
+                });
+                feed(&[level.unwrap_or(255)]);
+                for f in g.faces.iter().filter(|f| beam_detail::alpha_tested(f.pass, blend_casts)) {
+                    // what the map asks of the texture, from the beam alone
+                    let floor = self
+                        .beams
+                        .texels(origin, radius, f.repeats)
+                        .and_then(|px| self.textures.beam_level(&f.tex_id, px));
+                    let resident = self.textures.decoded_level(&f.tex_id);
+                    // the coarser of the two: a level only the camera loaded
+                    // is no part of the map's shadow
+                    feed(&[beam_detail::hash_level(resident, floor)]);
+                    levels.insert((resident.unwrap_or(255), floor.unwrap_or(255)));
+                }
+            }
+            // (resident level / level the floor asks, per texture, 255: none)
+            let pairs: Vec<String> = levels.iter().map(|(r, f)| format!("{r}/{f}")).collect();
+            line += &format!(" map{slot}: casters={n} hash={hash:016x} tex={}", pairs.join(","));
+        }
+        let (frame, phase) = self.projector_phase;
+        let phase = if phase.is_empty() {
+            String::new()
+        } else {
+            format!(" frame={frame} phase={phase}")
+        };
+        log::info!(
+            target: "aurora_viewer::scene::lights",
+            "projector casters:{phase} eye={eye:?}{line} shadow_geom_kb={} beam_textures={} beam_texture_kb={}",
+            self.stats.shadow_geom_kb,
+            self.stats.beam_textures,
+            self.stats.beam_texture_kb
+        );
+    }
+
+    /// Choose, request and bind the geometry object `idx` draws in the
+    /// projectors' shadow maps (beam_detail.rs), and write its ranges to the
+    /// faces. The camera range stands while the geometry is pending.
+    fn refresh_shadow_geom(&mut self, renderer: &mut Renderer, world: &World, idx: usize) {
+        let Some(g) = self.gpu.get(idx) else {
+            return;
+        };
+        let held = g.shadow_geom;
+        if self.beams.is_empty() && held.is_none() {
+            return;
+        }
+        // The sphere the projectors test and size the object by: its origin
+        // and its scale, never the bounds of the geometry it is drawn with
+        // (they change with the camera's level of detail). The GPU and the
+        // CPU lists cull the maps' casters with the same one (`member_sphere`).
+        let (origin, radius) = g.beam_sphere();
+        // the texture floor: what the maps cover of its alpha-tested faces
+        if beam_detail::eligible(g) {
+            let blend_casts = aurora_render::shadow_cull::blend_casts();
+            for f in g
+                .faces
+                .iter()
+                .filter(|f| beam_detail::alpha_tested(f.pass, blend_casts) && !f.tex_id.is_nil())
+            {
+                if let Some(px) = self.beams.texels(origin, radius, f.repeats) {
+                    self.textures.note_usage_beam(&f.tex_id, px);
+                }
+            }
+        }
+        let camera = g.geom.filter(|_| beam_detail::eligible(g) && !g.faces.is_empty());
+        let mut desired = None;
+        if let Some(cam) = camera
+            && let Some(level) = self.beams.level(origin, radius, self.lod_factor)
+            && let Some(shadow) = beam_detail::shadow_key(cam, level)
+        {
+            // (a mesh without that level draws another one: compared and
+            // requested by the level it resolves to)
+            match beam_detail::resolve_level(cam, shadow, |id, lod| self.meshes.resolved_lod(id, lod)) {
+                // The camera draws the block the projectors want now, but
+                // would stop doing so when it moves: hold that geometry (the
+                // one already held when it is the same block) so the map
+                // never waits for a build the camera's move asked for. It
+                // is the camera's own geometry, shared: no memory of its own.
+                beam_detail::Resolved::Camera => {
+                    desired = Some(match held {
+                        Some(h) if self.same_block(h, cam) => h,
+                        _ => cam,
+                    });
+                }
+                beam_detail::Resolved::Key(k) => desired = Some(k),
+                // (the header is not known: the camera's range, or the
+                // geometry held, stands)
+                beam_detail::Resolved::Wait => return,
+            }
+        }
+        if desired.is_none() && held.is_none() {
+            return;
+        }
+        let (mut ready, failed) = match desired {
+            Some(k) => (self.geom_ready(&k).is_some(), self.geom_failed(&k)),
+            None => (false, false),
+        };
+        if let Some(k) = desired
+            && !ready
+            && !failed
+            && let Some(o) = world.objects.get(idx)
+        {
+            // (shadow-only geometry: the lowest rank of a mesh download)
+            ready = self.request_geom(k, o, MeshNeed { px: 1.0, own: false });
+        }
+        match beam_detail::plan(held, desired, ready, failed) {
+            beam_detail::Step::Keep => return,
+            beam_detail::Step::Bind(k) => {
+                self.geom_ref(k);
+                self.gpu[idx].shadow_geom = Some(k);
+            }
+            beam_detail::Step::Drop => self.gpu[idx].shadow_geom = None,
+        }
+        if let Some(old) = held {
+            self.geom_unref(old);
+        }
+        self.write_shadow_ranges(renderer, idx);
+    }
+
+    /// Both keys draw one block: equal, or two levels of a mesh that resolve
+    /// to the same block of its asset.
+    fn same_block(&self, a: GeomKey, b: GeomKey) -> bool {
+        match (a, b) {
+            (GeomKey::Mesh { id, lod: x }, GeomKey::Mesh { id: other, lod: y }) if id == other => {
+                matches!((self.meshes.resolved_lod(&id, x), self.meshes.resolved_lod(&id, y)), (Some(p), Some(q)) if p == q)
+            }
+            _ => a == b,
+        }
+    }
+
+    /// Write the shadow ranges of the faces of object `idx` from its shadow
+    /// geometry (cleared when it holds none), and their GPU face entries.
+    fn write_shadow_ranges(&mut self, renderer: &mut Renderer, idx: usize) {
+        let geom = self.gpu[idx].shadow_geom.and_then(|k| self.geom_ready(&k));
+        let g = &mut self.gpu[idx];
+        beam_detail::apply(&mut g.faces, geom.as_deref());
+        for (fi, f) in g.faces.iter().enumerate() {
+            renderer.records.set_face(f.record, cull_face(f, idx, fi == 0));
         }
     }
 
@@ -4369,6 +4746,7 @@ impl Scene {
                 rez_glow: false,
                 system: None,
                 first_person_hidden: false,
+                shadow: None,
             });
         }
         for t in old_tex {
@@ -4695,6 +5073,7 @@ impl Scene {
                     rez_glow: false,
                     system: Some(SystemPart::of(part.name)),
                     first_person_hidden: matches!(part.name, "head" | "hair" | "eyelashes" | "eye_left" | "eye_right"),
+                    shadow: None,
                 });
             }
             for t in old_tex {
@@ -4721,7 +5100,10 @@ impl Scene {
         let posed = self.posed_avatar_sphere(o.full_id, palette, system_binds, avatar_model, pos);
         let g = &mut self.gpu[idx];
         g.center = pos;
+        g.origin = pos;
         g.radius = 1.2;
+        g.beam_radius = 0.0;
+        g.beam_own = false;
         g.posed_sphere = posed;
     }
 
@@ -4778,10 +5160,28 @@ impl Scene {
         // terrain (none while the Surface Patch rendering type is hidden:
         // not drawn, casting no shadow, in no reflection)
         let terrain_regions = if self.hidden_types.terrain { None } else { Some(&self.regions) };
+        // a projector's shadow map takes the terrain in its beam, near the
+        // camera or not
+        let spot_terrain = shadows && self.projector_shadows_on && !self.projector_objects.is_empty();
         for (&handle, r) in terrain_regions.into_iter().flatten() {
             for c in r.chunks.values() {
                 let center = c.world_center(r.offset);
-                if (center - view.eye).length() - c.radius > dd * 1.5 {
+                let near = (center - view.eye).length() - c.radius <= dd * 1.5;
+                if spot_terrain {
+                    self.lists.spot_terrain_casters.push(ShadowCaster {
+                        cmd: DrawCmd {
+                            index_count: c.alloc.index_count,
+                            first_index: c.alloc.index_offset,
+                            base_vertex: c.alloc.vertex_offset as i32,
+                            record: c.record,
+                            bounds: [0.0; 4],
+                        },
+                        center,
+                        radius: c.radius,
+                        alpha: r.surface.masked,
+                    });
+                }
+                if !near {
                     continue;
                 }
                 let cmd = DrawCmd {
@@ -5025,6 +5425,7 @@ impl Scene {
             reflection_distance: refl_dist,
             shadows,
             reflections,
+            spot_casts: full && shadows && self.projector_shadows_on && !self.projector_objects.is_empty(),
             shelter: full,
         };
 
@@ -5073,6 +5474,7 @@ impl Scene {
             debug_green: Vec<DrawCmd>,
             debug_yellow: Vec<DrawCmd>,
             casters: Vec<ShadowCaster>,
+            spot: Vec<ShadowCaster>,
             shelter: Vec<ShadowCaster>,
             refl: Vec<ShadowCaster>,
             refl_blend: Vec<blend_order::BlendEntry>,
@@ -5102,6 +5504,7 @@ impl Scene {
             debug_green: Vec::new(),
             debug_yellow: Vec::new(),
             casters: Vec::new(),
+            spot: Vec::new(),
             shelter: Vec::new(),
             refl: Vec::new(),
             refl_blend: Vec::new(),
@@ -5173,6 +5576,8 @@ impl Scene {
                 reflects,
                 probes,
                 shelters,
+                spot_casts,
+                seen,
             }) = object_visibility(
                 g,
                 idx,
@@ -5184,6 +5589,9 @@ impl Scene {
             else {
                 return l;
             };
+            // what the projectors' maps test a caster with: the same sphere
+            // as the GPU (`CullObject::beam`), whatever level the camera draws
+            let spot_sphere = g.member_sphere();
             if in_view {
                 l.visible += 1;
             }
@@ -5292,6 +5700,22 @@ impl Scene {
                             alpha: pass.record_flags() != 0,
                         });
                     }
+                    // the projectors' shadow maps: the same faces as the sun's,
+                    // whatever the camera reaches (`ObjVis::spot_casts`)
+                    if spot_casts && (pass != Pass::Blend || g.rigged || g.is_avatar || blend_casts) {
+                        l.spot.push(ShadowCaster {
+                            // (the level of detail of the beam, not the camera's)
+                            cmd: f.shadow.map_or(cmd, |(first_index, index_count, base_vertex)| DrawCmd {
+                                index_count,
+                                first_index,
+                                base_vertex,
+                                ..cmd
+                            }),
+                            center: spot_sphere.0,
+                            radius: spot_sphere.1,
+                            alpha: pass.record_flags() != 0,
+                        });
+                    }
                     // the rain's shelter map: blended faces too (glass keeps
                     // the rain off as well as tiles)
                     if shelters {
@@ -5331,7 +5755,7 @@ impl Scene {
                         rig,
                     });
                 }
-                if usage {
+                if usage && seen {
                     // (out of view too: what memory pressure may not
                     // lower a texture under, see `note_usage_away`)
                     note_face_usage(&mut l.usage, f, px, in_view);
@@ -5401,6 +5825,7 @@ impl Scene {
             a.part_faces.append(&mut b.part_faces);
             a.part_skinned += b.part_skinned;
             a.casters.append(&mut b.casters);
+            a.spot.append(&mut b.spot);
             a.shelter.append(&mut b.shelter);
             a.refl.append(&mut b.refl);
             a.refl_blend.append(&mut b.refl_blend);
@@ -5478,6 +5903,7 @@ impl Scene {
             .blend_double_sided
             .extend(self.blend_sorted.iter().map(|e| e.double_sided));
         self.lists.shadow_casters.extend(result.casters);
+        self.lists.spot_casters.extend(result.spot);
         self.lists.shelter_casters.extend(result.shelter);
         self.lists.reflection = result.refl;
         // the rigged first, in the Legacy Viewer's order and writing depth as
@@ -7654,6 +8080,7 @@ mod tests {
             rez_glow: false,
             system: None,
             first_person_hidden: false,
+            shadow: None,
         }
     }
 
@@ -8057,7 +8484,9 @@ mod tests {
     /// and visible objects.
     #[test]
     fn gpu_culling_matches_the_cpu_lists() {
-        use aurora_render::gpu_cull::{BIN_PROBE, BIN_REFL_WATER, BIN_SHADOW, BIN_SHADOW_ALPHA, CullFrame, face_bins, frame_flags};
+        use aurora_render::gpu_cull::{
+            BIN_PROBE, BIN_REFL_WATER, BIN_SHADOW, BIN_SHADOW_ALPHA, BIN_SPOT, CullFrame, face_bins, frame_flags,
+        };
         let mut seed = 0x853c_49e6_748f_ea9bu64;
         let mut rand = move |n: u32| {
             seed ^= seed << 13;
@@ -8107,6 +8536,15 @@ mod tests {
             g.rigged = rand(6) == 0;
             g.hud = rand(40) == 0;
             g.skeleton_owner = (rand(10) == 0).then(Uuid::new_v4);
+            // a third of the plain objects have their own beam sphere: the
+            // origin of their geometry and half their scale diagonal, which
+            // the level of detail bounds (`center`, `radius`) do not follow
+            if !g.is_avatar && !g.rigged && rand(3) == 0 {
+                g.beam_own = true;
+                g.beam_radius = 0.05 + rand(300) as f32 * 0.1;
+                g.origin = g.center + Vec3::new(rand(60) as f32 - 30.0, rand(60) as f32 - 30.0, rand(20) as f32 - 10.0);
+                g.local_origin = g.origin - g.anchor.map_or(Vec3::ZERO, |a| anchor_at[a.matrix as usize]);
+            }
             let faces = rand(3) as usize;
             g.faces = (0..faces).map(|_| test_face(passes[rand(6) as usize], false)).collect();
             let _ = i;
@@ -8134,6 +8572,7 @@ mod tests {
             reflection_distance: 64.0,
             shadows: true,
             reflections: true,
+            spot_casts: true,
             shelter: false,
         };
         let gview = GpuCullView {
@@ -8157,16 +8596,22 @@ mod tests {
             &[aurora_render::shadow_cull::CASTER_PLANES_ALL; 3],
             0.0,
             [Mat4::IDENTITY; 3],
-            [None; aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS],
+            // a projector map that holds everything in its frustum: what
+            // is left out of it is the beam's resolution test alone
+            std::array::from_fn(|k| (k == 0).then_some(all)),
             None,
             flags,
         );
+        // apex, near plane distance and texels per metre of beam at one metre
+        frame.spot_apex[0] = (eye + Vec3::new(5.0, 5.0, 5.0)).extend(0.1).to_array();
+        frame.spot_scale[0] = [150.0, 0.0, 0.0, 0.0];
         frame.water = [[0.0, 0.0, 0.0, 1.0]; 6];
         frame.probe = frame.water;
         frame.probe_eye = [0.0, 0.0, 0.0, 1e9];
         frame.sizes[1] = n as u32;
         let objects: Vec<CullObject> = gpu.iter().enumerate().map(|(i, g)| g.cull_object(i)).collect();
         let spheres = aurora_render::gpu_cull::world_spheres(&objects, &palettes, &[], &[]);
+        let beams = aurora_render::gpu_cull::world_beams(&objects, &palettes, &spheres);
         let mut faces = Vec::new();
         let mut owner = Vec::new();
         for (i, g) in gpu.iter().enumerate() {
@@ -8175,11 +8620,11 @@ mod tests {
                 owner.push((i, fi));
             }
         }
-        let (mut drawn, mut casting) = (0, 0);
+        let (mut drawn, mut casting, mut spotted) = (0, 0, 0);
         for (k, &(i, fi)) in owner.iter().enumerate() {
             let g = &gpu[i];
             let f = &g.faces[fi];
-            let (m, visible) = face_bins(&frame, &faces, &objects, &spheres, k);
+            let (m, visible) = face_bins(&frame, &faces, &objects, &spheres, &beams, k);
             let vis = object_visibility(g, i, &ctx, |a| full.get(a).copied().unwrap_or(true), |a| complex[a], |a| loading[a]);
             let solid = matches!(f.pass, Pass::Opaque | Pass::OpaqueTwoSided | Pass::Mask | Pass::MaskTwoSided);
             let (main, casts, refl, probe, in_view) = match &vis {
@@ -8207,6 +8652,20 @@ mod tests {
             assert_eq!(m >> BIN_REFL_WATER & 1 == 1, refl, "reflection, object {i}");
             assert_eq!(m >> BIN_PROBE & 1 == 1, probe, "probe, object {i}");
             assert_eq!(visible, in_view && fi == 0, "visible object {i}");
+            // a projector's map: the caster rules of the sun's, without the
+            // camera's reach (draw and shadow distance, small objects), the
+            // beam's own resolution instead
+            // (the frame has BLEND_CASTS: blended faces cast too)
+            let spot_rules = f.pass != Pass::Hidden;
+            // (by the beam sphere, the same one the CPU lists use)
+            let (sc, sr) = g.member_sphere();
+            if g.beam_own && g.anchor.is_none() {
+                assert_eq!(beams[i], (sc, sr), "the GPU's beam sphere is the CPU's, object {i}");
+            }
+            let resolves = aurora_render::gpu_cull::spot_resolves_at(frame.spot_apex[0], frame.spot_scale[0][0], sc, sr);
+            let spot = vis.as_ref().is_some_and(|v| v.spot_casts) && spot_rules && resolves;
+            assert_eq!(m >> BIN_SPOT & 1 == 1, spot, "projector map, object {i}");
+            spotted += spot as u32;
             drawn += main as u32;
             casting += casts as u32;
         }
@@ -8214,5 +8673,80 @@ mod tests {
             drawn > 50 && casting > 100,
             "the scene exercises the tests ({drawn} drawn, {casting} casting)"
         );
+        assert!(spotted > 50, "the projector map takes casters ({spotted})");
+        assert!(
+            gpu.iter().any(|g| g.beam_own && g.member_sphere() != g.sphere()),
+            "some objects have a beam sphere other than their bounds"
+        );
+    }
+
+    /// The CPU lists give a projector's map the same casters wherever the
+    /// camera stands or looks: far, tiny, behind it, all of them.
+    #[test]
+    fn the_cpu_spot_casters_do_not_depend_on_the_camera() {
+        let passes = [Pass::Opaque, Pass::Mask, Pass::Blend];
+        let mut gpu: Vec<ObjGpu> = (0..60).map(|_| ObjGpu::default()).collect();
+        for (i, g) in gpu.iter_mut().enumerate() {
+            g.center = Vec3::new(i as f32 * 7.0 - 200.0, (i % 5) as f32 * 40.0, (i % 3) as f32 * 10.0);
+            // from a speck to a house
+            g.radius = 0.001 + (i % 7) as f32 * 3.0;
+            g.faces = vec![test_face(passes[i % 3], false)];
+        }
+        // two bounds of one object, as two levels of detail give: the sphere
+        // the maps test it with stays the same when it has a beam sphere of
+        // its own, and follows the bounds when it has not
+        for (i, g) in gpu.iter_mut().enumerate() {
+            g.origin = g.center + Vec3::new(0.0, 0.0, 0.25);
+            g.beam_radius = 0.5 + (i % 4) as f32;
+            g.beam_own = i % 2 == 0;
+            let before = g.member_sphere();
+            let table = g.cull_object(i).beam;
+            let (center, radius) = (g.center, g.radius);
+            // another level: other bounds, the same origin and scale
+            g.center += Vec3::new(0.3, -0.2, 0.1);
+            g.radius *= 0.8;
+            if g.beam_own {
+                assert_eq!(g.member_sphere(), before, "object {i}");
+                assert_eq!(g.cull_object(i).beam, table, "object {i}");
+                assert_eq!(before, (g.origin, g.beam_radius));
+                assert_eq!(table, g.origin.extend(g.beam_radius).to_array());
+            } else {
+                assert_ne!(g.member_sphere(), before, "object {i}");
+                assert_eq!(g.member_sphere(), (g.center, g.radius));
+                assert_eq!(table, [0.0; 4], "no beam sphere for the camera's");
+            }
+            (g.center, g.radius) = (center, radius);
+        }
+        let fov = 1.0f32;
+        let proj = glam::camera::rh::proj::directx::perspective_infinite_reverse(fov, 16.0 / 9.0, 0.1);
+        let casters = |eye: Vec3, forward: Vec3| -> Vec<(usize, bool)> {
+            let view_m = glam::camera::rh::view::look_to_mat4(eye, forward, Vec3::Z);
+            let view = CullView::new(proj * view_m, eye, 900.0, fov);
+            let ctx = CullCtx {
+                view: &view,
+                draw_distance: 64.0,
+                shadow_distance: 64.0,
+                reflection_distance: 32.0,
+                shadows: true,
+                reflections: true,
+                spot_casts: true,
+                shelter: false,
+            };
+            gpu.iter()
+                .enumerate()
+                .filter_map(|(i, g)| object_visibility(g, i, &ctx, |_| true, |_| false, |_| false).map(|v| (i, v.spot_casts)))
+                .collect()
+        };
+        let reference = casters(Vec3::ZERO, Vec3::X);
+        assert_eq!(reference.len(), 60, "every object may cast into a projector map");
+        assert!(reference.iter().all(|&(_, c)| c));
+        for (eye, forward) in [
+            (Vec3::new(300.0, 90.0, 40.0), Vec3::NEG_X),
+            (Vec3::new(-250.0, -80.0, 5.0), Vec3::Y),
+            (Vec3::new(10.0, 10.0, 900.0), Vec3::NEG_Z),
+            (Vec3::new(5.0, 0.0, 2.0), Vec3::new(1.0, 1.0, 0.2)),
+        ] {
+            assert_eq!(casters(eye, forward), reference, "from {eye} looking {forward}");
+        }
     }
 }

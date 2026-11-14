@@ -68,13 +68,20 @@ pub(super) struct MoveSync {
     pub(super) xf: Xf,
     pub(super) model: [[f32; 4]; 4],
     pub(super) center: Vec3,
+    /// The centre of the unit box, which no level of detail changes (`Placement::origin`).
+    pub(super) origin: Vec3,
     pub(super) radius: f32,
+    /// The beam sphere's radius and whether the projectors cull with it
+    /// (`Placement::beam_radius`, `beam_own`).
+    pub(super) beam_radius: f32,
+    pub(super) beam_own: bool,
     pub(super) owner_avatar: Option<usize>,
     pub(super) mirror: bool,
     /// Placed by the GPU: `model` is relative to this anchor (a rigged
     /// mesh: its skeleton's, and the identity).
     pub(super) anchor: Option<AnchorRef>,
     pub(super) local_center: Vec3,
+    pub(super) local_origin: Vec3,
     pub(super) posed_rest: Option<[f32; 4]>,
     /// Some face record holds another model matrix or another anchor.
     pub(super) changed: bool,
@@ -85,13 +92,54 @@ pub(super) struct MoveSync {
     pub(super) lod: Option<(f32, f32)>,
 }
 
+/// The bounds centre and the origin of a geometry's space, in the world and
+/// in an anchor's space (`model` relative to the anchor, `world_model` not).
+/// The centre is the middle of the box of the geometry drawn, which every
+/// level of detail has its own of; the origin (the middle of the unit box)
+/// is the same for all of them.
+pub(super) struct BoxPoints {
+    pub(super) center: Vec3,
+    pub(super) origin: Vec3,
+    pub(super) local_center: Vec3,
+    pub(super) local_origin: Vec3,
+}
+
+impl BoxPoints {
+    /// `origin_local` is the unit box's centre in the geometry's space: zero,
+    /// except for a skinned mesh whose matrices end with the inverse of its
+    /// bind shape (the build bakes the bind shape into the vertices).
+    pub(super) fn of(world_model: &Mat4, model: &Mat4, min: Vec3, max: Vec3, origin_local: Vec3) -> Self {
+        let center_local = (min + max) * 0.5;
+        Self {
+            center: world_model.transform_point3(center_local),
+            origin: world_model.transform_point3(origin_local),
+            local_center: model.transform_point3(center_local),
+            local_origin: model.transform_point3(origin_local),
+        }
+    }
+}
+
 /// Model matrix and culling bounds of an object on its bound geometry.
 pub(super) struct Placement {
     /// In the world, or relative to `anchor`.
     pub(super) model: Mat4,
     /// World bounds.
     pub(super) center: Vec3,
+    /// The origin of the geometry's space (the centre of its unit box) taken
+    /// through the same matrices as `center`: no level of detail moves it, so
+    /// the projectors' shadow level (beam_detail.rs) reads this and never
+    /// `center`. A rigged mesh's equals its centre.
+    pub(super) origin: Vec3,
     pub(super) radius: f32,
+    /// Half the diagonal of the object's scale box (`beam_detail::radius_of_scale`):
+    /// with `origin`, the sphere the projectors size an object by (its shadow
+    /// level, its texture floor, the trace), which no level of detail changes.
+    pub(super) beam_radius: f32,
+    /// A static prim, sculpt or mesh, whose geometry lies in its scale box's
+    /// sphere at every level of detail (`beam_detail::prim_in_unit_box`,
+    /// `bounds_in_sphere`): the projectors' maps take their casters with
+    /// that same sphere, not with the camera's bounds (`ObjGpu::member_sphere`).
+    pub(super) beam_own: bool,
     pub(super) rigged: bool,
     pub(super) skeleton_owner: Option<(Uuid, usize)>,
     /// Placed by the GPU (anchors.rs): a worn object from its attachment
@@ -99,6 +147,8 @@ pub(super) struct Placement {
     pub(super) anchor: Option<AnchorRef>,
     /// `center` in the anchor's space.
     pub(super) local_center: Vec3,
+    /// `origin` in the anchor's space.
+    pub(super) local_origin: Vec3,
     /// Rigged mesh posed by the GPU: the sphere of its skeleton in the
     /// anchor's space, which stands for its bounds without a sane pose.
     pub(super) posed_rest: Option<[f32; 4]>,
@@ -403,6 +453,7 @@ impl SyncCtx<'_> {
                 )
             })
             .flatten();
+        let unbind_known = unbind.is_some();
         let unbind = unbind.unwrap_or(Mat4::IDENTITY);
         let world_model = match (skeleton, plant) {
             (Some((_, _, model)), _) => model,
@@ -414,9 +465,15 @@ impl SyncCtx<'_> {
             (None, Some((_, local_pos, local_rot))) => Mat4::from_scale_rotation_translation(scale, local_rot, local_pos) * unbind,
             (None, None) => world_model,
         };
-        let center_local = (geom.min + geom.max) * 0.5;
         let half = (geom.max - geom.min) * 0.5;
-        let mut center = world_model.transform_point3(center_local);
+        let origin_local = if unbind == Mat4::IDENTITY {
+            Vec3::ZERO
+        } else {
+            unbind.inverse().transform_point3(Vec3::ZERO)
+        };
+        let points = BoxPoints::of(&world_model, &model, geom.min, geom.max, origin_local);
+        let mut center = points.center;
+        let mut origin = points.origin;
         let col_scale = world_model
             .x_axis
             .truncate()
@@ -431,6 +488,7 @@ impl SyncCtx<'_> {
             && let Some(ow) = world.objects.get(owner_idx)
         {
             center = ap;
+            origin = ap;
             radius = anchors::skeleton_extent(ow);
             let pelvis = world.avatar_lib.pelvis;
             posed_rest = skeleton_anchor.map(|_| [pelvis.x, pelvis.y, pelvis.z, radius]);
@@ -449,21 +507,51 @@ impl SyncCtx<'_> {
             })
         {
             center = c;
+            origin = c;
             radius = r;
         }
         let local_center = match (skeleton_anchor, point_anchor) {
             (Some(_), _) => world_model.inverse().transform_point3(center),
-            (None, Some(_)) => model.transform_point3(center_local),
+            (None, Some(_)) => points.local_center,
             (None, None) => center,
         };
+        // (a rigged mesh is never a shadow-level candidate: its origin is its centre)
+        if rigged {
+            origin = center;
+        }
+        let local_origin = match point_anchor {
+            _ if rigged => local_center,
+            Some(_) => points.local_origin,
+            None => origin,
+        };
+        // (a Linden plant, a flexible prim bending out of its box, the sculpt
+        // placeholder and what is skinned keep the camera's sphere)
+        // (and a shape that leaves its unit box: a sheared prim, a mesh whose
+        // bounds pass its scale box, a skinned mesh with no bind shape yet)
+        let beam_own = !rigged
+            && !xf.2
+            && plant.is_none()
+            && super::beam_detail::own_kind(geom_key)
+            && match geom_key {
+                GeomKey::Prim { .. } => {
+                    super::beam_detail::prim_in_unit_box(&o.visual_volume())
+                        && super::beam_detail::bounds_in_sphere(geom.min, geom.max, scale)
+                }
+                _ if skinned => unbind_known,
+                _ => super::beam_detail::bounds_in_sphere(geom.min, geom.max, scale),
+            };
         Placement {
             model,
             center,
+            origin,
             radius,
+            beam_radius: super::beam_detail::radius_of_scale(scale),
+            beam_own,
             rigged,
             skeleton_owner,
             anchor: skeleton_anchor.or(point_anchor.map(|a| a.0)),
             local_center,
+            local_origin,
             posed_rest,
         }
     }
@@ -562,12 +650,16 @@ impl SyncCtx<'_> {
             xf,
             model,
             center: p.center,
+            origin: p.origin,
             radius: p.radius,
+            beam_radius: p.beam_radius,
+            beam_own: p.beam_own,
             owner_avatar: Scene::wearer_avatar(world, idx).map(|(_, i)| i),
             // reflection probe with the box and mirror flags (LLReflectionProbeParams)
             mirror: o.extra.reflection_probe.is_some_and(|p| p.flags & 0x4 != 0 && p.flags & 0x1 != 0),
             anchor: p.anchor,
             local_center: p.local_center,
+            local_origin: p.local_origin,
             posed_rest: p.posed_rest,
             changed,
             clear_flags: o.render.needs_records,
@@ -610,11 +702,15 @@ impl SyncCtx<'_> {
             xf,
             model,
             center: p.center,
+            origin: p.origin,
             radius: p.radius,
+            beam_radius: p.beam_radius,
+            beam_own: p.beam_own,
             owner_avatar: Scene::wearer_avatar(self.world, idx).map(|(_, i)| i),
             mirror: g.mirror,
             anchor: p.anchor,
             local_center: p.local_center,
+            local_origin: p.local_origin,
             posed_rest: p.posed_rest,
             changed,
             clear_flags: false,
@@ -704,6 +800,45 @@ mod tests {
             );
             assert!(world.objects.get(child).unwrap().render.needs_records);
         }
+    }
+
+    #[test]
+    fn the_origin_is_the_same_whatever_the_level_of_detail_bounds() {
+        use glam::Quat;
+        let world_model =
+            Mat4::from_scale_rotation_translation(Vec3::new(2.0, 3.0, 4.0), Quat::from_rotation_z(0.7), Vec3::new(10.0, 20.0, 30.0));
+        // a coarse and a fine level of the same shape: other bounds
+        let coarse = BoxPoints::of(
+            &world_model,
+            &world_model,
+            Vec3::splat(-0.45),
+            Vec3::new(0.5, 0.45, 0.5),
+            Vec3::ZERO,
+        );
+        let fine = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.5), Vec3::splat(0.5), Vec3::ZERO);
+        assert!(coarse.center.distance(fine.center) > 0.1, "the centres differ with the level");
+        assert!(coarse.origin.distance(fine.origin) < 1e-6);
+        assert!(coarse.local_origin.distance(fine.local_origin) < 1e-6);
+        assert!(fine.origin.distance(Vec3::new(10.0, 20.0, 30.0)) < 1e-5);
+    }
+
+    #[test]
+    fn a_skinned_meshs_origin_is_its_position_not_the_bind_shape_offset() {
+        use glam::Quat;
+        let place =
+            Mat4::from_scale_rotation_translation(Vec3::new(2.0, 3.0, 4.0), Quat::from_rotation_z(0.7), Vec3::new(10.0, 20.0, 30.0));
+        let bind_shape = Mat4::from_rotation_translation(Quat::from_rotation_x(0.4), Vec3::new(0.0, 0.0, 1.0));
+        let unbind = bind_shape.inverse();
+        let world_model = place * unbind;
+        let origin_local = unbind.inverse().transform_point3(Vec3::ZERO);
+        let p = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.5), Vec3::splat(0.5), origin_local);
+        assert!(p.origin.distance(Vec3::new(10.0, 20.0, 30.0)) < 1e-4, "{:?}", p.origin);
+        assert!(p.local_origin.distance(p.origin) < 1e-6);
+        let naive = world_model.transform_point3(Vec3::ZERO);
+        assert!(
+            naive.distance(Vec3::new(10.0, 20.0, 30.0)) > 0.5,
+            "the test is sensitive to the bug"
+        );
     }
 
     fn volume(path: u8, profile: u8, sculpt: Option<u8>) -> VolumeParams {
