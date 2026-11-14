@@ -103,6 +103,10 @@ pub struct View<'a> {
     pub views: &'a SavedViews,
     pub flying: bool,
     pub always_run: bool,
+    /// RLVa `@fly` / `@alwaysrun`: the Fly and Run buttons are greyed
+    /// (LLFloaterMove::sUpdateMovementStatus, indra/newview/llmoveview.cpp).
+    pub fly_locked: bool,
+    pub run_locked: bool,
     pub seated: bool,
     pub mouselook: bool,
     /// "Object view": a click in the world focuses the camera (Alt+click).
@@ -1036,15 +1040,20 @@ fn modes(ui: &mut egui::Ui, p: &Palette, view: &View, out: &mut Output) {
         0
     };
     let options = [
-        ("walk", aurora_i18n::tr!("controls-walk"), ControlAction::Walk),
-        ("run", aurora_i18n::tr!("controls-run"), ControlAction::Run),
-        ("plane-tilt-filled", aurora_i18n::tr!("common-fly"), ControlAction::Fly),
+        ("walk", aurora_i18n::tr!("controls-walk"), ControlAction::Walk, true),
+        ("run", aurora_i18n::tr!("controls-run"), ControlAction::Run, !view.run_locked),
+        (
+            "plane-tilt-filled",
+            aurora_i18n::tr!("common-fly"),
+            ControlAction::Fly,
+            !view.fly_locked || view.flying,
+        ),
     ];
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let w = (ui.available_width() - 8.0) / 3.0;
-        for (n, (icon, label, action)) in options.into_iter().enumerate() {
-            if mode_button(ui, p, icon, label, n == mode, w).clicked() && n != mode {
+        for (n, (icon, label, action, enabled)) in options.into_iter().enumerate() {
+            if mode_button(ui, p, icon, label, n == mode, w, enabled).clicked() && enabled && n != mode {
                 mode = n;
                 out.actions.push(action);
             }
@@ -1110,22 +1119,30 @@ fn classic_movement(ui: &mut egui::Ui, p: &Palette, view: &View, out: &mut Outpu
     pad(ui, p, view, out);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for (icon, tip, on, action) in [
+        for (icon, tip, on, action, enabled) in [
             (
                 "walk",
                 aurora_i18n::tr!("controls-walk"),
                 !view.flying && !view.always_run,
                 ControlAction::Walk,
+                true,
             ),
             (
                 "run",
                 aurora_i18n::tr!("controls-run"),
                 !view.flying && view.always_run,
                 ControlAction::Run,
+                !view.run_locked,
             ),
-            ("plane-tilt-filled", aurora_i18n::tr!("common-fly"), view.flying, ControlAction::Fly),
+            (
+                "plane-tilt-filled",
+                aurora_i18n::tr!("common-fly"),
+                view.flying,
+                ControlAction::Fly,
+                !view.fly_locked || view.flying,
+            ),
         ] {
-            if widgets::icon_toggle(ui, p, icon, tip, on) {
+            if widgets::icon_toggle_if(ui, p, icon, tip, on, enabled) {
                 out.actions.push(action);
             }
         }
@@ -1377,15 +1394,21 @@ fn paint_icon(ui: &egui::Ui, icon: &str, center: Pos2, size: f32, tint: egui::Co
 }
 
 /// A movement mode: its icon and its name, the accent's face when chosen.
-fn mode_button(ui: &mut egui::Ui, p: &Palette, icon: &str, label: &str, on: bool, width: f32) -> egui::Response {
+fn mode_button(ui: &mut egui::Ui, p: &Palette, icon: &str, label: &str, on: bool, width: f32, enabled: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, BUTTON_H + 2.0), Sense::click());
-    let fill = match (on, resp.hovered()) {
+    let fill = match (on, resp.hovered() && enabled) {
         (true, _) => p.violet,
         (false, true) => p.raised.gamma_multiply(1.3),
         (false, false) => p.raised,
     };
     ui.painter().rect_filled(rect, ui.visuals().widgets.inactive.corner_radius, fill);
-    let color = if on { p.on_accent } else { p.muted };
+    let color = if !enabled {
+        p.muted_dim
+    } else if on {
+        p.on_accent
+    } else {
+        p.muted
+    };
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.0), color);
@@ -1555,6 +1578,8 @@ mod tests {
             views: &SavedViews::default(),
             flying: false,
             always_run: false,
+            fly_locked: false,
+            run_locked: false,
             seated: false,
             mouselook: false,
             object_view: false,
@@ -1642,6 +1667,8 @@ mod tests {
                 views: &SavedViews::default(),
                 flying: false,
                 always_run: false,
+                fly_locked: false,
+                run_locked: false,
                 seated: false,
                 mouselook,
                 object_view: false,
@@ -1862,6 +1889,8 @@ mod tests {
                 views: &SavedViews::default(),
                 flying: false,
                 always_run: false,
+                fly_locked: false,
+                run_locked: false,
                 seated: false,
                 mouselook: false,
                 object_view: false,
