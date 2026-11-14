@@ -224,7 +224,11 @@ pub(crate) fn st_scene_source(device: &wgpu::Device) -> String {
 /// without it the module would not validate, as for the scene module
 /// (`blend_exact::scene_source`). The method draws none of those passes.
 pub(crate) fn without_early_test(src: String, early_test: bool) -> String {
-    if early_test { src } else { src.replace("@early_depth_test(force)", "") }
+    if early_test {
+        src
+    } else {
+        src.replace("@early_depth_test(force)", "")
+    }
 }
 
 /// The table of masks for `samples` bits: `[r * SEEDS + seed]` a random
