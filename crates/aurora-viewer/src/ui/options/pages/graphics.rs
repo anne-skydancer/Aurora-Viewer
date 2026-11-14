@@ -1009,6 +1009,8 @@ fn image(cx: &mut Cx) {
     // the order of the blended faces (scene/blend_order.rs), beyond the
     // Legacy Viewer's sort
     cx.group(tr!("ui-options-transparency"), |cx| {
+        // order-independent transparency replaces this order while it is on
+        cx.greyed(cx.s.oit);
         cx.combo(
             tr!("ui-options-blend-order"),
             tr!("ui-options-blend-order-help"),
@@ -1021,6 +1023,7 @@ fn image(cx: &mut Cx) {
                 (4, tr!("ui-options-blend-order-full")),
             ],
         );
+        cx.greyed(false);
         // Order-independent transparency (aurora-render oit_stochastic.rs),
         // an Aurora addition that replaces the order above while it is on
         cx.experimental()

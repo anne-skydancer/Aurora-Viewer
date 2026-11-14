@@ -285,9 +285,12 @@ pub(super) fn effects(settings: &crate::settings::Settings, vr: bool) -> String 
         _ => {}
     }
     // stochastic transparency takes the blended faces: the exact order is not drawn
-    word(settings.oit, format_args!("blend-stochastic"));
     word(
-        !settings.oit && settings.blend_order > 0,
+        aurora_render::oit_stochastic::wanted(settings.oit),
+        format_args!("blend-stochastic"),
+    );
+    word(
+        !aurora_render::oit_stochastic::wanted(settings.oit) && settings.blend_order > 0,
         format_args!("blend-exact{}", settings.blend_order),
     );
     word(settings.bloom, format_args!("bloom"));

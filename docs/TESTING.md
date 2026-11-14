@@ -12039,8 +12039,9 @@ What the inventory must show with these scenarios:
   (each takes the scene sample nearest to it); 8 samples per pixel, their
   noise averaged over the frames by the temporal blend (the resolved colour
   blended 1/8 with the last frame's, reprojected through the nearest
-  transparent depth and clamped to the 3 x 3 neighbourhood; the seeds
-  change every frame). With MSAA (`AURORA_AA=2`, `3`, `4`) the total alpha
+  transparent depth and clamped to the 3 x 3 neighbourhood; the subsets
+  are drawn again every frame, and the dither of R advances by the golden
+  ratio conjugate). With MSAA (`AURORA_AA=2`, `3`, `4`) the total alpha
   and the composite stay at the scene's samples, each dimmed by its own
   transparency. Without (`AURORA_AA=0` none, `1` FXAA, `5` TAA, `6` SMAA,
   `7` FSR) the total alpha runs at the passes' samples against that spread
@@ -12111,10 +12112,11 @@ What the inventory must show with these scenarios:
   (`AURORA_CAPTURE_FRAMES=2000,2001,2002`) must be identical over the
   panes, frame after frame, and the same again in another session, with
   other content loaded first (`AURORA_DEMO_HAIR_CARDS`, `AURORA_DEMO_CROWD`). The load of the order-independent transparency
-  (`AURORA_OIT=1`): the grain of 20 layers against 8. In `perf summary`, compare
-  1600 × 900 and the frame is drawn again in the sorted order (the image
-  stays the same as with `AURORA_OIT=0`). In `perf summary`, compare
-  `g_transparent` with `AURORA_OIT=0` and `1`, `AURORA_AA=3` and `6`.
+  (`AURORA_OIT=1`): compare 20 layers with 8 at 1600 × 900, in `perf summary`
+  (`g_transparent` with `AURORA_OIT=0` and `1`, `AURORA_AA=3` and `6`), and
+  look at the grain of the 20 layers. In a photo, one of its tiles or a
+  snapshot the frame is drawn again in the sorted order (the image stays the
+  same as with `AURORA_OIT=0`).
 - **`AURORA_MESH_ORDER=asset`**: the triangles of every mesh face are drawn
   in the order the Legacy Viewer draws them, reordered for the vertex cache
   when the mesh is loaded (`LLVolumeFace::cacheOptimize`,
