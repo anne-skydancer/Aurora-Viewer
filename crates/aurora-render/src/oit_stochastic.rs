@@ -138,6 +138,14 @@ pub(crate) fn method(setting_oit: bool) -> Method {
     method_with(env_value(), setting_oit)
 }
 
+/// Whether the method is wanted this frame, from the environment or the OIT
+/// setting: the scene then keeps the sorted lists under it
+/// (`scene/blend_order.rs::depth_mode`), which every fallback of the method
+/// draws, and the exact order is not drawn.
+pub fn wanted(setting_oit: bool) -> bool {
+    method(setting_oit) == Method::Stochastic
+}
+
 /// Whether a frame tries to draw its blended faces with the method: it is
 /// on, the frame has some, and it is the plain main view (not a photo, one
 /// of its tiles or a snapshot, whose size and history the method would mix
@@ -198,16 +206,25 @@ pub(crate) fn enable_directive_with(prim: bool) -> &'static str {
 /// The scene module's source with the method's passes in (the common
 /// part, object.wgsl, env.wgsl): the module the method's pipelines use.
 pub(crate) fn st_scene_source(device: &wgpu::Device) -> String {
+    let object = st_object_source(
+        device,
+        &crate::water_shader_source(&["object.wgsl"], include_str!("shaders/object.wgsl")),
+    );
     format!(
         "{}{}\n{}\n{}",
         enable_directive(device),
         crate::common_shader_source(),
-        st_object_source(
-            device,
-            &crate::water_shader_source(&["object.wgsl"], include_str!("shaders/object.wgsl"))
-        ),
+        without_early_test(object, device.features().contains(crate::blend_exact::EARLY_TEST)),
         crate::water_shader_source(&["env.wgsl"], include_str!("shaders/env.wgsl"))
     )
+}
+
+/// object.wgsl holds the exact order's passes (blend_exact.rs), whose
+/// `@early_depth_test(force)` needs a device feature (Vulkan and GLES only):
+/// without it the module would not validate, as for the scene module
+/// (`blend_exact::scene_source`). The method draws none of those passes.
+pub(crate) fn without_early_test(src: String, early_test: bool) -> String {
+    if early_test { src } else { src.replace("@early_depth_test(force)", "") }
 }
 
 /// The table of masks for `samples` bits: `[r * SEEDS + seed]` a random
@@ -1507,6 +1524,30 @@ mod tests {
         assert!(scene.contains("fn glow_amount"));
         assert!(scene.contains("fn fs_blend"));
         assert!(!scene.contains("ST_BEGIN") && !scene.contains("ST_END"));
+    }
+
+    /// The method's module, on a device without the early depth test (Metal,
+    /// DX12): the exact order's attribute goes, and naga takes the rest
+    /// without the capability.
+    #[test]
+    fn the_method_module_has_no_early_depth_test_where_the_device_has_none() {
+        let object = include_str!("shaders/object.wgsl").replace("\r\n", "\n");
+        assert!(object.contains("@early_depth_test(force)"), "the exact order's pass moved");
+        assert_eq!(without_early_test(object.clone(), true), object);
+        let stripped = st_object_source_with(&without_early_test(object, false), true);
+        assert!(!stripped.contains("@early_depth_test"));
+        let src = format!(
+            "{}{}\n{}\n{}",
+            enable_directive_with(true),
+            crate::COMMON_SHADER,
+            stripped,
+            include_str!("shaders/env.wgsl")
+        );
+        let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+        let caps = naga::valid::Capabilities::all() - naga::valid::Capabilities::EARLY_DEPTH_TEST;
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps)
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
     }
 
     #[test]

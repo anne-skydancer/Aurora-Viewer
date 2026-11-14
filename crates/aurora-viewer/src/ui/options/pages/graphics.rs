@@ -1006,6 +1006,26 @@ fn image(cx: &mut Cx) {
             &field!(specular_aa),
         );
     });
+    // the order of the blended faces (scene/blend_order.rs), beyond the
+    // Legacy Viewer's sort
+    cx.group(tr!("ui-options-transparency"), |cx| {
+        cx.combo(
+            tr!("ui-options-blend-order"),
+            tr!("ui-options-blend-order-help"),
+            &field!(blend_order),
+            &[
+                (0, tr!("ui-options-blend-order-standard")),
+                (1, tr!("ui-options-blend-order-fast")),
+                (2, tr!("ui-options-blend-order-balanced")),
+                (3, tr!("ui-options-blend-order-high")),
+                (4, tr!("ui-options-blend-order-full")),
+            ],
+        );
+        // Order-independent transparency (aurora-render oit_stochastic.rs),
+        // an Aurora addition that replaces the order above while it is on
+        cx.experimental()
+            .toggle(tr!("ui-options-oit"), tr!("ui-options-oit-help"), &field!(oit));
+    });
     // FSR's own settings (aurora_render fsr.rs), greyed under another
     // anti-aliasing
     cx.group(tr!("ui-options-fsr"), |cx| {
@@ -1030,12 +1050,6 @@ fn image(cx: &mut Cx) {
             0..=100,
             "%",
         );
-    });
-    // Order-independent transparency (aurora-render oit_stochastic.rs), an
-    // Aurora addition
-    cx.group(tr!("ui-options-transparency"), |cx| {
-        cx.experimental()
-            .toggle(tr!("ui-options-oit"), tr!("ui-options-oit-help"), &field!(oit));
     });
     cx.group(tr!("ui-options-color-and-sharpness"), |cx| {
         // "HDR and Emissive" (RenderDisableVintageMode): off, the tone

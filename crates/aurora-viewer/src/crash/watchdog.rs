@@ -125,6 +125,8 @@ pub const EFFECT_WORDS: &[&str] = &[
     "aa-msaa",
     "aa-taa",
     "aa-smaa",
+    "blend-exact",
+    "blend-stochastic",
     "bloom",
     "glow",
     "indirect-light",
