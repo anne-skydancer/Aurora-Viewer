@@ -399,6 +399,12 @@ pub struct SceneCounts {
     /// Objects that move by themselves placed by the GPU from an anchor of
     /// their own (anchors.rs).
     pub movers: usize,
+    /// Projector shadows (beam_detail.rs): geometry held only for the maps,
+    /// textures their floor holds finer than the camera would, and what that
+    /// costs (KB).
+    pub shadow_geom_kb: usize,
+    pub beam_textures: usize,
+    pub beam_texture_kb: usize,
 }
 
 /// Sums over the current period.
@@ -474,7 +480,7 @@ struct Period {
     texture_pages: u32,
     texture_page_bytes: u64,
     geometry_bytes: u64,
-    scene: [u64; 15],
+    scene: [u64; 18],
     /// Interface: egui shapes, meshes and vertices, and the most vertices
     /// in a single frame.
     ui: [u64; 3],
@@ -770,6 +776,9 @@ impl FrameProfile {
             s.flexies,
             s.flexies_held,
             s.movers,
+            s.shadow_geom_kb,
+            s.beam_textures,
+            s.beam_texture_kb,
         ]) {
             *sum += v as u64;
         }
@@ -1063,7 +1072,7 @@ fn summary(p: &Period, elapsed: Duration) -> String {
         " | draws={:.0} calls={:.0} tris_k={:.0} shadow_draws={:.0} particles={:.0} occluded={:.0} cull={} \
          blend={:.0} blend_tris_k={:.0} blend_early={:.2} blend_glow={:.0} glow_alpha={:.0} lights={:.0} light_tiles={:.2} probes={:.0} | objects={:.0} visible={:.0} synced={:.0} anchored={:.0} movers={:.0} flexies={:.0} flexies_held={:.0} rebuilt={:.1} posed={:.1} \
          records_kb={:.1} palettes_kb={:.1} cull_kb={:.1} vertices_kb={:.1} journal_kb={:.1} | textures={} texture_mb={} texture_pages={} pages_mb={} geometry_mb={} \
-         jobs={:.0} geom_pending={:.0} sync_backlog={:.0}",
+         jobs={:.0} geom_pending={:.0} sync_backlog={:.0} shadow_geom_kb={:.0} beam_textures={:.0} beam_texture_kb={:.0}",
         count(p.draws),
         count(p.calls),
         count(p.triangles) / 1000.0,
@@ -1101,6 +1110,9 @@ fn summary(p: &Period, elapsed: Duration) -> String {
         count(s[8]),
         count(s[9]),
         count(s[10]),
+        count(s[15]),
+        count(s[16]),
+        count(s[17]),
     );
     out
 }
@@ -1261,7 +1273,10 @@ mod tests {
             l.contains(" s_sync_list=0.00 s_sync_plan=0.00 s_sync_apply=0.50 s_sync_anchors=0.00 s_sync_flexibles=0.00 s_sync_alpha=0.00 "),
             "{l}"
         );
-        assert!(l.ends_with(" sync_backlog=0"), "{l}");
+        assert!(
+            l.ends_with(" sync_backlog=0 shadow_geom_kb=0 beam_textures=0 beam_texture_kb=0"),
+            "{l}"
+        );
         assert!(!max.contains("sync="), "{max}");
         // nothing over 1 ms
         let quiet = summary(&Period::default(), PERIOD);

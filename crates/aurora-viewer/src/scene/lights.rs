@@ -278,9 +278,12 @@ impl Scene {
             view.map_px,
             shadows
                 .iter()
-                .flatten()
-                .filter_map(|s| lights.get(s.light as usize)?.light.projector),
+                .enumerate()
+                .filter_map(|(k, s)| Some((k, lights.get(s.as_ref()?.light as usize)?.light.projector?))),
         );
+        if self.frame.is_multiple_of(15) && std::env::var_os("AURORA_PROJECTOR_TRACE").is_some() {
+            self.trace_projector_casters(world, eye);
+        }
         let active = shadows.iter().flatten().count();
         if active != shadow_map_count {
             log::info!("projector shadow maps active: {active}, limit {}", view.projector_shadow_limit);

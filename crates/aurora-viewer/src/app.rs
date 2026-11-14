@@ -1061,6 +1061,7 @@ pub struct App {
     /// AURORA_DEMO_MASK_255: a Mask of cutoff 255 over an alpha under opaque.
     mask_255_demo: Option<crate::demo::mask_255::Mask255Demo>,
     texture_res_demo: Option<crate::demo::texture_res::TextureResDemo>,
+    projector_shade_demo: Option<crate::demo::projector_shade::ProjectorShadeDemo>,
     /// AURORA_DEMO_AA_SWITCH: the anti-aliasing changes still to come.
     aa_switch_demo: Vec<(u64, u8)>,
     /// AURORA_DEMO_SCULPT_MISSING: a sculpt whose map is missing.
@@ -2028,6 +2029,7 @@ impl App {
             tex_refresh_demo: None,
             mask_255_demo: None,
             texture_res_demo: None,
+            projector_shade_demo: None,
             aa_switch_demo: if std::env::var_os("AURORA_DEMO").is_some() {
                 crate::demo::aa_switch::from_env()
             } else {
@@ -13868,6 +13870,16 @@ impl App {
                 &self.scene.jobs,
             );
         }
+        // AURORA_DEMO_PROJECTOR=shade: a pierced shade with a streamed mask
+        if let (Some(demo), Some(g)) = (&mut self.projector_shade_demo, &mut self.gfx) {
+            demo.tick(
+                self.frame_count,
+                &mut self.world,
+                &mut self.scene.textures,
+                &mut g.renderer,
+                &self.scene.jobs,
+            );
+        }
         if let Some(demo) = &mut self.sculpt_missing_demo {
             demo.tick(self.frame_count, &mut self.world, &mut self.scene.textures);
         }
@@ -14751,6 +14763,9 @@ impl App {
             flexies: if in_world { st.flexies } else { 0 },
             flexies_held: if in_world { st.flexies_held } else { 0 },
             movers: if in_world { st.movers } else { 0 },
+            shadow_geom_kb: st.shadow_geom_kb,
+            beam_textures: st.beam_textures,
+            beam_texture_kb: st.beam_texture_kb,
         };
         let mut parts = std::mem::take(&mut self.scene.parts);
         parts.merge(&std::mem::take(&mut self.ui_parts));
@@ -22061,6 +22076,7 @@ impl ApplicationHandler for App {
             self.tex_refresh_demo = crate::demo::tex_refresh::TexRefreshDemo::from_env();
             self.mask_255_demo = crate::demo::mask_255::Mask255Demo::from_env();
             self.texture_res_demo = crate::demo::texture_res::TextureResDemo::from_env();
+            self.projector_shade_demo = crate::demo::projector_shade::ProjectorShadeDemo::from_env();
             self.sculpt_missing_demo = crate::demo::sculpt::MissingMapDemo::from_env();
             self.texture_missing_demo = crate::demo::missing_texture::MissingTextureDemo::from_env();
             self.slideshow_demo = crate::demo::slideshow::SlideshowDemo::from_env();

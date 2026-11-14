@@ -49,6 +49,8 @@ struct Beam {
     /// `Projector::half_tan` and `Projector::near`.
     half_tan: f32,
     near: f32,
+    /// Index of the map in the frame's shadow table (the trace).
+    slot: usize,
 }
 
 /// The projectors holding a shadow map, as of the last frame's assignment
@@ -61,12 +63,13 @@ pub struct Beams {
 }
 
 impl Beams {
-    /// Replace the beams with those of the projectors that hold a map, the
-    /// maps being `map_px` texels across.
-    pub fn set(&mut self, map_px: u32, projectors: impl IntoIterator<Item = Projector>) {
+    /// Replace the beams with those of the projectors that hold a map
+    /// (`slot`, projector), the maps being `map_px` texels across.
+    pub fn set(&mut self, map_px: u32, projectors: impl IntoIterator<Item = (usize, Projector)>) {
         self.beams.clear();
         self.map_px = map_px as f32;
-        self.beams.extend(projectors.into_iter().map(|p| Beam {
+        self.beams.extend(projectors.into_iter().map(|(slot, p)| Beam {
+            slot,
             half_tan: p.half_tan,
             near: p.near,
             planes: view_planes(p.shadow_matrix).map(|v| v.to_array()),
@@ -104,12 +107,33 @@ impl Beams {
             })
             .fold(None, |m: Option<f32>, v| Some(m.map_or(v, |m| m.max(v))))
     }
+
+    /// The slots of the maps holding the sphere, in the order of the maps.
+    pub fn holding(&self, center: Vec3, radius: f32) -> impl Iterator<Item = usize> + '_ {
+        self.beams
+            .iter()
+            .filter(move |b| sphere_in(&b.planes, center, radius))
+            .map(|b| b.slot)
+    }
+
+    /// The slots of the maps, in order.
+    pub fn slots(&self) -> impl Iterator<Item = usize> + '_ {
+        self.beams.iter().map(|b| b.slot)
+    }
 }
 
 /// A face whose shadow is alpha-tested: its base texture shapes the shadow.
 pub fn alpha_tested(pass: super::Pass) -> bool {
     use super::Pass;
     matches!(pass, Pass::Mask | Pass::MaskTwoSided | Pass::Blend)
+}
+
+/// The level of detail of a geometry (None for the kinds without levels).
+pub fn level_of(key: GeomKey) -> Option<u8> {
+    match key {
+        GeomKey::Prim { lod, .. } | GeomKey::Sculpt { lod, .. } | GeomKey::Mesh { lod, .. } => Some(lod),
+        _ => None,
+    }
 }
 
 /// An object whose shadow level is its own (see the module's list of what
@@ -209,7 +233,7 @@ mod tests {
 
     fn beams(ps: &[Projector]) -> Beams {
         let mut b = Beams::default();
-        b.set(1024, ps.iter().copied());
+        b.set(1024, ps.iter().copied().enumerate());
         b
     }
 
@@ -278,6 +302,8 @@ mod tests {
             beams(&[far, near]).texels(center, radius, 1.0),
             beams(&[near]).texels(center, radius, 1.0)
         );
+        assert_eq!(beams(&[far, near]).holding(center, radius).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(beams(&[far, near]).slots().collect::<Vec<_>>(), [0, 1]);
     }
 
     #[test]

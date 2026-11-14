@@ -93,6 +93,7 @@ fn source() -> DemoSource {
     DemoSource {
         has: |id| texture_index(id).is_some(),
         texels: |_, discard| texture_mips(discard as u32),
+        alpha: (AlphaKind::Opaque, false),
     }
 }
 

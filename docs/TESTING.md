@@ -4421,7 +4421,7 @@ both open states and the selection count. Capture at frame 620.
 | `AURORA_DEMO_SHIMMER=1` | A long glossy plate with a fine repeated normal map (specular anti-aliasing) |
 | `AURORA_DEMO_TEXANIM=1` | Texture animations (llSetTextureAnim) |
 | `AURORA_DEMO_GLOW_LAYERS=1` or `shell` | Transparent glowing layer over a glowing skin |
-| `AURORA_DEMO_PROJECTOR=1`, `point`, `cluster`, `cluster-orbit`, `cluster-scan` or `cluster-bench` | Projectors and overlapping shadow-map transitions |
+| `AURORA_DEMO_PROJECTOR=1`, `point`, `cluster`, `cluster-orbit`, `cluster-scan`, `cluster-bench` or `shade` | Projectors and overlapping shadow-map transitions; `shade`: a pierced shade round a projector, the camera dollying in and out |
 | `AURORA_DEMO_SKY=<gamma>[,<haze>[,<ambient>[,<probe ambiance>]]]\|midday` | EEP sky with this gamma, classic unless it has a probe ambiance; or the library Midday |
 | `AURORA_DEMO_WATER_EEP=<fresnel offset>,<fresnel scale>,<blur>,<normal scale>[,<fog r,g,b>]` | Water of the `AURORA_DEMO_SKY` day with these values, out-of-range ones included |
 | `AURORA_DEMO_SKY_FLAGS=<flags>\|none` | Settings flags of the `AURORA_DEMO_SKY` day (rights of the sky and water snapshots) |
@@ -11301,7 +11301,7 @@ What the inventory must show with these scenarios:
 | `AURORA_SSIL=1`, `0` or `alt` | GTAO's screen-space indirect light forced on or off for this launch |
 | `AURORA_SSIL_INTENSITY=<0-8>` | Strength of GTAO's indirect light for this launch |
 | `AURORA_CONTACT_SHADOWS=0`, `1`, `alt`, `prepass` or `shell` | Sun contact shadows off, on, by turns, cast by the depth prepass alone, or by thin shells |
-| `AURORA_PROJECTOR_TRACE=1` | Log projector shadow selection and fades each frame |
+| `AURORA_PROJECTOR_TRACE=1` | Log projector shadow selection and fades each frame, and per map a hash of its casters every 15 frames |
 | `AURORA_CONTACT_SOFT=0` | Contact shadows with hard pixel edges (no softening) |
 | `AURORA_CONTACT_VARIANT=bend`, `no-early-out`, `no-shared`, `short` or `skip` | Diagnostic: the contact shadows' shader without one of its constructs (GPU hangs of the AMD RX 9000 cards) |
 | `AURORA_BLOOM=0`, `1` or `alt` | Bloom off, on or one second in two for this launch |
@@ -11737,6 +11737,29 @@ What the inventory must show with these scenarios:
   4, default 1.5; 1 is one physical bounce, which hardly shows);
   `AURORA_SSIL_INTENSITY=<0-8>` replaces it for a launch, to compare (at
   2 a glow starts around the foot of objects, at 4 it is grainy).
+- **`AURORA_DEMO_PROJECTOR=shade`**: a pierced lamp shade round a projector
+  (`demo_projector_shade.rs`): a hollow cylinder wearing a 1024 px
+  alpha-masked texture, streamed like a downloaded one (`DemoSource`), a
+  projector turned down inside it, 3.2 m above a 16 m slab; the light that
+  gets through the holes draws dots round a lit disc. From frame 700 the
+  camera dollies on one line of sight, cycles of 1200 frames: far (28 m)
+  until 900, in until 1200, near (5 m) until 1400, away until 1700, far
+  until 1900. Use `AURORA_DEMO_SUN=0,-30` (night) to see the dots, and
+  `AURORA_CAPTURE_FRAMES=800,1300,1900` (far, near, far): the three show the
+  same dots, at another size. With `AURORA_PROJECTOR_TRACE=1` the
+  `projector casters:` lines (every 15 frames) give, for each map, the
+  number of its casters and a hash of what each is drawn with there (object,
+  level of detail of its geometry in the map, level of its alpha-tested
+  textures): after the shade has loaded, the hash is the same on every line
+  of the dolly, whatever the camera does. Without the texture floor
+  (`note_usage_beam` left out) the hash changes twice as the camera
+  comes in (the texture is first seen from afar). Rigged meshes, avatars,
+  flexible prims, trees and HUDs keep the camera's level and are not in the
+  hash. The line also gives the costs (decision D6, no cap): `shadow_geom_kb`,
+  the geometry only the projectors' maps hold, `beam_textures` and
+  `beam_texture_kb`, the textures the floor holds finer than the camera
+  would and what that costs; the same three are in the `AURORA_PROFILE=1`
+  line. Measure them in a store and at KB on the grid.
 - **`AURORA_PROJECTOR_TRACE=1`**: writes `projector trace:` lines with the
   camera position, the number of projectors that may hold a shadow map, the
   shadow-map owners (the last eight digits of each projector's id, `-` for
@@ -11744,7 +11767,9 @@ What the inventory must show with these scenarios:
   as no projector comes or goes. It requires an info
   log filter (`RUST_LOG=warn,aurora_viewer::scene::lights=info` is enough).
   Use a separately named test log and unset the variable after diagnosis;
-  these per-frame lines are intended for local investigation.
+  these per-frame lines are intended for local investigation. Every 15
+  frames it also writes the `projector casters:` line described under
+  `AURORA_DEMO_PROJECTOR=shade`.
 - **`AURORA_CONTACT_SHADOWS=0|1|alt|prepass|shell`**: the sun's contact shadows
   (Preferences › Graphics › Contact shadows, `contact_shadows.rs`, after
   Bend Studio's screen space shadows) for this launch, without changing the

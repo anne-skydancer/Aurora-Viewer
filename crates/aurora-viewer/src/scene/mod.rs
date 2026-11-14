@@ -818,6 +818,12 @@ pub struct SceneStats {
     pub flexies_held: usize,
     /// Objects that move by themselves placed from a mover (anchors.rs).
     pub movers: usize,
+    /// Geometry held only for the projectors' shadow maps, the textures their
+    /// floor holds finer than the camera would, and what that costs, in KB
+    /// (beam_detail.rs), as of the last usage visit.
+    pub shadow_geom_kb: usize,
+    pub beam_textures: usize,
+    pub beam_texture_kb: usize,
     /// Skeletons built again this frame (a shape, an attachment or their
     /// age changed), out of `posed` (AURORA_PROFILE).
     pub skeletons_rebuilt: usize,
@@ -4010,6 +4016,78 @@ impl Scene {
         for idx in (phase..self.gpu.len()).step_by(30) {
             self.refresh_shadow_geom(renderer, world, idx);
         }
+        if phase == 0 {
+            self.note_beam_costs();
+        }
+    }
+
+    /// What the shadow levels and the texture floor hold, for the trace and
+    /// the profile (decision D6: no cap, a statistic to measure on the grid):
+    /// the geometry only the projectors' maps reference, and what the texture
+    /// floor holds more than the camera would (`TextureStreamer::beam_floor`).
+    fn note_beam_costs(&mut self) {
+        use aurora_render::types::Vertex;
+        let mut held: HashMap<GeomKey, u32> = HashMap::new();
+        for g in &self.gpu {
+            if let Some(k) = g.shadow_geom {
+                *held.entry(k).or_default() += 1;
+            }
+        }
+        let bytes: u64 = held
+            .iter()
+            .filter(|(k, n)| self.geoms.get(*k).is_some_and(|e| e.refs == **n))
+            .filter_map(|(k, _)| self.geom_ready(k))
+            .flat_map(|geom| {
+                geom.faces
+                    .iter()
+                    .flatten()
+                    .map(|a| a.vertex_count as u64 * std::mem::size_of::<Vertex>() as u64 + a.index_count as u64 * 4)
+                    .collect::<Vec<_>>()
+            })
+            .sum();
+        let (textures, texture_bytes) = self.textures.beam_floor();
+        self.stats.shadow_geom_kb = (bytes >> 10) as usize;
+        self.stats.beam_textures = textures;
+        self.stats.beam_texture_kb = (texture_bytes >> 10) as usize;
+    }
+
+    /// `AURORA_PROJECTOR_TRACE`: per projector map, how many casters stand in
+    /// it and a hash of what each is drawn with there (object, level of
+    /// detail of its geometry in the map, level of its alpha-tested
+    /// textures). It stays the same while nothing in the beam moves, whatever
+    /// the camera does (beam_detail.rs); rigged meshes, avatars and HUDs
+    /// keep the camera's level and are left out.
+    pub fn trace_projector_casters(&self, world: &World, eye: Vec3) {
+        let mut line = String::new();
+        for slot in self.beams.slots() {
+            let (mut n, mut hash) = (0u32, 0xcbf2_9ce4_8422_2325u64);
+            let mut feed = |bytes: &[u8]| {
+                for b in bytes {
+                    hash = (hash ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+                }
+            };
+            for (idx, g) in self.gpu.iter().enumerate() {
+                if g.faces.is_empty() || !beam_detail::eligible(g) || !self.beams.holding(g.center, g.radius).any(|s| s == slot) {
+                    continue;
+                }
+                let Some(o) = world.objects.get(idx) else {
+                    continue;
+                };
+                n += 1;
+                feed(o.full_id.as_bytes());
+                feed(&[g.shadow_geom.or(g.geom).and_then(beam_detail::level_of).unwrap_or(255)]);
+                for f in g.faces.iter().filter(|f| beam_detail::alpha_tested(f.pass)) {
+                    feed(&[self.textures.decoded_level(&f.tex_id).unwrap_or(255)]);
+                }
+            }
+            line += &format!(" map{slot}: casters={n} hash={hash:016x}");
+        }
+        log::info!(
+            "projector casters: eye={eye:?}{line} shadow_geom_kb={} beam_textures={} beam_texture_kb={}",
+            self.stats.shadow_geom_kb,
+            self.stats.beam_textures,
+            self.stats.beam_texture_kb
+        );
     }
 
     /// Choose, request and bind the geometry object `idx` draws in the

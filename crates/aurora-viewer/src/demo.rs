@@ -25,6 +25,8 @@ pub mod pointing;
 #[path = "demo_poser.rs"]
 pub mod poser;
 
+#[path = "demo_projector_shade.rs"]
+pub mod projector_shade;
 #[path = "demo_texture_library.rs"]
 pub mod texture_library;
 
@@ -4691,7 +4693,8 @@ pub fn events() -> Vec<NetEvent> {
     // ordinary point light (fixed ids). The first lights the wall through
     // its image; the ground stays dark outside the frustums. `point`: the
     // projectors without their texture, as plain point lights, to compare.
-    if let Ok(mode) = std::env::var("AURORA_DEMO_PROJECTOR") {
+    // (`shade` is its own scenario, projector_shade.rs)
+    if let Some(mode) = std::env::var("AURORA_DEMO_PROJECTOR").ok().filter(|m| m != "shade") {
         let floor = height(cx, cy) + 0.35;
         let wall = [0.82, 0.82, 0.82, 1.0];
         add(prim(
@@ -8339,6 +8342,9 @@ pub fn projector_bench_done() -> bool {
 /// Fixed framing of the #1494 offline fixture, or a repeatable camera sweep.
 pub fn projector_camera(frame: u64) -> Option<(Vec3, Vec3)> {
     let mode = std::env::var("AURORA_DEMO_PROJECTOR").ok()?;
+    if mode == "shade" {
+        return Some(projector_shade::camera(frame));
+    }
     if !mode.starts_with("cluster") {
         return None;
     }

@@ -923,6 +923,9 @@ pub struct TextureStats {
 pub struct DemoSource {
     pub has: fn(&Uuid) -> bool,
     pub texels: fn(&Uuid, u8) -> Vec<(u32, u32, Vec<u8>)>,
+    /// Alpha class of its texels and whether the alpha channel is used
+    /// (what a decode of the real file would tell).
+    pub alpha: (AlphaKind, bool),
 }
 
 /// Discard level of a texture of `full` pixels (its largest side) to cover
@@ -2428,6 +2431,27 @@ impl TextureStreamer {
         }
     }
 
+    /// Textures a projector's floor holds at a finer level than the camera
+    /// alone would ask for, and the bytes that costs more: what
+    /// `AURORA_PROJECTOR_TRACE` and the profile report of the floor (a
+    /// statistic to measure on the grid, decision D6: no cap).
+    pub fn beam_floor(&self) -> (usize, u64) {
+        let mut out = (0, 0);
+        for e in self.entries.values().filter(|e| e.beam_px > 0.0 && e.refs > 0) {
+            let camera = e.capped(e.need_px).max(e.fixed_px);
+            if e.capped(e.beam_px) <= camera {
+                continue;
+            }
+            let full = full_size(e).map_or(512, |(w, h)| w.max(h)) as f32;
+            let alone = discard_for(full, camera, e.info.map(|i| i.levels));
+            if let Some(d) = e.decoded.filter(|d| *d < alone) {
+                out.0 += 1;
+                out.1 += bytes_at(e, d).saturating_sub(bytes_at(e, alone));
+            }
+        }
+        out
+    }
+
     /// Like `note_usage`, for what memory pressure never lowers (as
     /// Firestorm's boosted textures: HUDs, sky, terrain).
     #[inline]
@@ -2773,16 +2797,7 @@ impl TextureStreamer {
                         *decodes += 1;
                         let (want, pool) = (e.want, staging.clone());
                         jobs.spawn_or(
-                            move || {
-                                texture_result(
-                                    id,
-                                    want,
-                                    (source.texels)(&id, want),
-                                    (AlphaKind::Opaque, false),
-                                    None,
-                                    pool.as_deref(),
-                                )
-                            },
+                            move || texture_result(id, want, (source.texels)(&id, want), source.alpha, None, pool.as_deref()),
                             move || JobResult::TextureFailed { id },
                         );
                     }
