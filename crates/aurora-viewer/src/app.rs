@@ -10373,6 +10373,12 @@ impl App {
                 self.camera.position = eye;
                 self.camera.target = target;
                 self.interface.set_hidden(&self.egui_ctx, true);
+                // the shade demo's camera path also rolls and zooms
+                if let Some((roll, fov_scale, phase)) = crate::demo::projector_lens(self.frame_count) {
+                    self.camera.roll = roll;
+                    self.camera.fov_y = (self.settings.camera.fov * fov_scale).clamp(0.05, 3.0);
+                    self.scene.projector_phase = (self.frame_count, phase);
+                }
             }
             let at = self
                 .studio_photo_session

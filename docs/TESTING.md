@@ -11750,7 +11750,10 @@ What the inventory must show with these scenarios:
   `projector casters:` lines (every 15 frames) give, for each map, the
   number of its casters and a hash of what each is drawn with there (object,
   level of detail of its geometry in the map, level of its alpha-tested
-  textures): after the shade has loaded, the hash is the same on every line
+  textures, read as the coarser of the level resident and the level the map
+  asks for, `beam_detail::hash_level`: it changes while the floor is not met,
+  and stays when the camera loads a finer level than the map needs): after
+  the shade has loaded, the hash is the same on every line
   of the dolly, whatever the camera does (for a static prim, sculpt or mesh
   that keeps to its unit box, the maps' casters, their level and their
   textures all read one sphere per object, its origin and half its scale
@@ -11768,6 +11771,37 @@ What the inventory must show with these scenarios:
   `beam_texture_kb`, the textures the floor holds finer than the camera
   would and what that costs; the same three are in the `AURORA_PROFILE=1`
   line (fields `shadow_geom_kb`, `beam_textures`, `beam_texture_kb`). Measure them in a store and at KB on the grid.
+  **`AURORA_DEMO_PROJECTOR=shade,axes`** runs another camera path, to check
+  every camera axis and not the dolly alone: from one reference pose (14 m
+  from the slab, the shade and its dots well in view), one phase per axis,
+  each coming back to the reference pose and holding it 100 frames: `dolly`
+  (in to 5 m, out to 28 m), `truck` (30 m sideways), `boom` (60 m up, 6 m
+  down), `yaw` (to the opposite bearing: the shade is behind), `pitch` (75
+  degrees up: the shade is out of view), `roll` (90 degrees about the line of
+  sight), `zoom` (the field of view at 0.35 then 1.7 times the setting's, the
+  camera still: the camera's own level of detail changes with no move), and
+  `close` (1.2 m from the shade, so that the camera asks for a finer level of
+  its texture than the map does). The reference is held 200 frames first
+  (frames 700 to 900), then the phases follow, 300 frames for one excursion,
+  500 for two (`demo_projector_shade.rs`, `Phase`); the demo logs
+  `AURORA_CAPTURE_FRAMES` when the shade arrives (the reference twice, then the end of every
+  hold: `790,890,1390,1690,2190,2490,2790,3090,3590,3890`). The shade wears a
+  4096 px texture repeated twice (the map asks for 1024 to 2048 px of it, the
+  camera is capped at 2048), the same look as the dolly's. The `projector
+  casters:` lines then give `frame=` and `phase=`, and per map
+  `tex=<resident level>/<level the map asks for>` of each alpha-tested
+  texture (255: none): every map keeps one hash from the first reference
+  hold to the last, `close` loading level 1 where the map asks for 2.
+  `shade,close` runs the reference and the close phase only (captures
+  `790,890,1190`). Compare the captures with the first reference, over a
+  crop that holds the lit disc and its holes and nothing animated
+  (`crop=420:320:600:395` at `AURORA_WINDOW_SIZE=1600,900` and
+  `AURORA_DEMO_SUN=0,-30`): two captures of the reference with nothing between
+  them are the noise floor (86 dB PSNR, largest pixel difference 1 of 255);
+  the axes come out at the same value (the roll and zoom captures add a
+  7 x 7 px patch at the crop's corner, off the shadow), and the capture after `close`, when the
+  finer level is resident, is 50 dB, largest difference 30 to 44, on the
+  edges of the holes only (a fraction of a pixel).
 - **`AURORA_PROJECTOR_TRACE=1`**: writes `projector trace:` lines with the
   camera position, the number of projectors that may hold a shadow map, the
   shadow-map owners (the last eight digits of each projector's id, `-` for

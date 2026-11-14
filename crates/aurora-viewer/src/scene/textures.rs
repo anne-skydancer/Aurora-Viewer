@@ -2452,6 +2452,16 @@ impl TextureStreamer {
         out
     }
 
+    /// The discard level a map asks of a texture covering `px` texels in it,
+    /// as the floor would load it: from the beam alone, so the same whatever
+    /// the camera does (`beam_floor` reads what is held; this is what is
+    /// asked). None while the texture's size is not known.
+    pub fn beam_level(&self, id: &Uuid, px: f32) -> Option<u8> {
+        let e = self.entries.get(id)?;
+        let (w, h) = full_size(e)?;
+        Some(discard_for(w.max(h) as f32, e.capped(px), e.info.map(|i| i.levels)))
+    }
+
     /// Like `note_usage`, for what memory pressure never lowers (as
     /// Firestorm's boosted textures: HUDs, sky, terrain).
     #[inline]

@@ -1105,6 +1105,10 @@ pub struct Scene {
     light_scratch: lights::Scratch,
     /// The projectors that cast shadows (`lights.rs`).
     spot_shadows: projector_cache::ProjectorSlots,
+    /// The frame and the phase of the camera path of the demo
+    /// `AURORA_DEMO_PROJECTOR=shade,axes`, named in the `projector casters:`
+    /// trace lines (empty outside it).
+    pub projector_phase: (u64, &'static str),
     /// Rain prototype: the terrain's heights around the camera
     /// (`rain_ground.rs`).
     rain_ground: rain_ground::RainGroundCache,
@@ -1771,6 +1775,7 @@ impl Scene {
             light_textures: HashMap::new(),
             light_scratch: Default::default(),
             spot_shadows: Default::default(),
+            projector_phase: (0, ""),
             rain_ground: Default::default(),
             mirror_objects: Default::default(),
             selection_wire: Default::default(),
@@ -4123,12 +4128,14 @@ impl Scene {
     /// `AURORA_PROJECTOR_TRACE`: per projector map, how many casters stand in
     /// it and a hash of what each is drawn with there (object, level of
     /// detail of its geometry in the map, level of its alpha-tested
-    /// textures). It stays the same while nothing in the beam moves, whatever
-    /// the camera does (beam_detail.rs); rigged meshes, avatars and HUDs
+    /// textures, the coarser of the level resident and the level the map asks
+    /// for: `beam_detail::hash_level`). It stays the same while nothing in the
+    /// beam moves, whatever the camera does (beam_detail.rs); rigged meshes, avatars and HUDs
     /// keep the camera's level and are left out.
     pub fn trace_projector_casters(&self, world: &World, eye: Vec3) {
         let mut line = String::new();
         let blend_casts = aurora_render::shadow_cull::blend_casts();
+        let mut levels = std::collections::BTreeSet::new();
         for slot in self.beams.slots() {
             let (mut n, mut hash) = (0u32, 0xcbf2_9ce4_8422_2325u64);
             let mut feed = |bytes: &[u8]| {
@@ -4158,14 +4165,32 @@ impl Scene {
                 });
                 feed(&[level.unwrap_or(255)]);
                 for f in g.faces.iter().filter(|f| beam_detail::alpha_tested(f.pass, blend_casts)) {
-                    feed(&[self.textures.decoded_level(&f.tex_id).unwrap_or(255)]);
+                    // what the map asks of the texture, from the beam alone
+                    let floor = self
+                        .beams
+                        .texels(origin, radius, f.repeats)
+                        .and_then(|px| self.textures.beam_level(&f.tex_id, px));
+                    let resident = self.textures.decoded_level(&f.tex_id);
+                    // the coarser of the two: a level only the camera loaded
+                    // is no part of the map's shadow
+                    feed(&[beam_detail::hash_level(resident, floor)]);
+                    levels.insert((resident.unwrap_or(255), floor.unwrap_or(255)));
                 }
             }
-            line += &format!(" map{slot}: casters={n} hash={hash:016x}");
+            // (resident level / level the floor asks, per texture, 255: none)
+            let pairs: Vec<String> = levels.iter().map(|(r, f)| format!("{r}/{f}")).collect();
+            line += &format!(" map{slot}: casters={n} hash={hash:016x} tex={}", pairs.join(","));
+            levels.clear();
         }
+        let (frame, phase) = self.projector_phase;
+        let phase = if phase.is_empty() {
+            String::new()
+        } else {
+            format!(" frame={frame} phase={phase}")
+        };
         log::info!(
             target: "aurora_viewer::scene::lights",
-            "projector casters: eye={eye:?}{line} shadow_geom_kb={} beam_textures={} beam_texture_kb={}",
+            "projector casters:{phase} eye={eye:?}{line} shadow_geom_kb={} beam_textures={} beam_texture_kb={}",
             self.stats.shadow_geom_kb,
             self.stats.beam_textures,
             self.stats.beam_texture_kb

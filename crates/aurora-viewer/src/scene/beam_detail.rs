@@ -136,6 +136,19 @@ impl Beams {
     }
 }
 
+/// The level of a texture the trace hash reads: the coarser (the larger
+/// discard level) of the one resident and the one the projector's map asks
+/// for. It changes while the floor is not met (the map's texture is still
+/// loading) and stays when the camera loads a finer level than the map
+/// needs: a shadow does not depend on the observer. 255: not resident yet.
+pub fn hash_level(resident: Option<u8>, floor: Option<u8>) -> u8 {
+    match (resident, floor) {
+        (Some(r), Some(f)) => r.max(f),
+        (Some(r), None) => r,
+        (None, _) => 255,
+    }
+}
+
 /// A face whose shadow is alpha-tested: its base texture shapes the shadow.
 /// A blended face only casts when `blend_casts` (`shadow_cull::blend_casts`).
 pub fn alpha_tested(pass: super::Pass, blend_casts: bool) -> bool {
@@ -313,6 +326,22 @@ mod tests {
     use aurora_render::arena::MeshAlloc;
     use glam::{Mat4, Quat};
     use uuid::Uuid;
+
+    #[test]
+    fn the_trace_reads_the_coarser_of_the_resident_and_the_floor_level() {
+        // not met yet: the resident level shows, and changes as it loads
+        assert_eq!(hash_level(Some(4), Some(2)), 4);
+        assert_eq!(hash_level(Some(3), Some(2)), 3);
+        // met: the floor's level
+        assert_eq!(hash_level(Some(2), Some(2)), 2);
+        // a finer level the camera loaded does not show
+        assert_eq!(hash_level(Some(1), Some(2)), 2);
+        assert_eq!(hash_level(Some(0), Some(2)), 2);
+        // not resident: one value whatever the floor asks; no floor: the resident one
+        assert_eq!(hash_level(None, Some(2)), 255);
+        assert_eq!(hash_level(None, None), 255);
+        assert_eq!(hash_level(Some(1), None), 1);
+    }
 
     /// A projector at `pos` pointing down (a prim's -Z), 60 degrees, reach 20 m.
     fn projector(pos: Vec3) -> Projector {

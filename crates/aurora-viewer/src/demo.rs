@@ -8339,12 +8339,22 @@ pub fn projector_bench_done() -> bool {
         .is_some_and(|start| start.elapsed().as_secs() >= 50)
 }
 
+/// The roll and the factor of the field of view of the shade demo's camera
+/// path at `frame`, with the name of its phase; None outside it.
+pub fn projector_lens(frame: u64) -> Option<(f32, f32, &'static str)> {
+    // (the dolly keeps the camera's own lens)
+    let phase = projector_shade::phase_name(frame)?;
+    let pose = projector_shade::scenario_pose(frame)?;
+    Some((pose.roll, pose.fov_scale, phase))
+}
+
 /// Fixed framing of the #1494 offline fixture, or a repeatable camera sweep.
 pub fn projector_camera(frame: u64) -> Option<(Vec3, Vec3)> {
-    let mode = std::env::var("AURORA_DEMO_PROJECTOR").ok()?;
-    if mode == "shade" {
-        return Some(projector_shade::camera(frame));
+    // (`shade`, `shade,axes`, `shade,close`: projector_shade.rs)
+    if let Some(pose) = projector_shade::scenario_pose(frame) {
+        return Some((pose.eye, pose.target));
     }
+    let mode = std::env::var("AURORA_DEMO_PROJECTOR").ok()?;
     if !mode.starts_with("cluster") {
         return None;
     }
