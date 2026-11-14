@@ -1272,6 +1272,7 @@ impl GpuCull {
             last: CullCounts::default(),
             clamped_logged: 0,
             max_groups: device.limits().max_compute_workgroups_per_dimension,
+            // (32 bytes per slot, two vec4: cull.wgsl `sphere_slots` is half its length)
             spheres: Self::make_storage(device, "cull spheres", 4096 * 32),
             sphere_cap: 4096,
             objects: 0,
@@ -1376,6 +1377,7 @@ impl GpuCull {
             let preferred = objects.next_power_of_two().min(sphere_capacity(&limits));
             let mut failure = None;
             for cap in fallback_capacities(self.sphere_cap, objects - self.sphere_cap, preferred, 1) {
+                // (32 bytes per slot: cull.wgsl `sphere_slots` is half the length)
                 match try_buffer(device, &Self::storage_desc("cull spheres", u64::from(cap) * 32)) {
                     Ok(spheres) => {
                         self.spheres = spheres;

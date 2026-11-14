@@ -337,7 +337,8 @@ fn spot_in(k: u32, c: vec3<f32>, r: f32) -> bool {
 
 // The caster's sphere covers at least one texel of projector map `k`
 // (gpu_cull::spot_resolves, kept line for line). It depends on the projector
-// and the caster alone, never on the camera.
+// and the sphere it is given alone, never on the camera itself (the beam
+// sphere of a caster that has one, cs_spheres).
 fn spot_resolves(k: u32, c: vec3<f32>, r: f32) -> bool {
     let a = frame.spot_apex[k];
     let dist = max(distance(c, a.xyz), a.w);
@@ -432,9 +433,13 @@ fn face_mask(i: u32) -> u32 {
     let d = length(c - frame.eye.xyz);
     let fl = frame.sizes.w;
     // Beyond the draw distance nothing of the camera's is drawn. The
-    // projector maps take their casters from the projector alone (its
-    // frustum and what the beam resolves, spot_resolves), wherever the
-    // camera is: a shadow does not change as the camera moves or turns.
+    // projector maps take a caster that has a beam sphere (a static prim,
+    // sculpt or mesh) from the projector alone (its frustum and what the
+    // beam resolves, spot_resolves), wherever the camera is: its shadow does
+    // not change as the camera moves or turns. The others (plants, flexible
+    // prims, rigged meshes, the sculpt placeholder) have the camera's sphere
+    // in its place (cs_spheres), and an avatar's state gate above is the
+    // camera's too.
     let beyond = d - r > frame.eye.w && !is_avatar;
     // (the rain's shelter map is no projector's: it keeps the camera's rules)
     let shelter_map = min(frame.groups.w, SPOT_MAPS - 1u);
@@ -520,6 +525,9 @@ fn face_mask(i: u32) -> u32 {
         // (an attachment too, rigged or not: horns, hair, a hat; the snow
         // would settle on it at once, as deep as on the ground)
         let moves = (o.flags & (OBJ_AVATAR | OBJ_RIGGED | OBJ_PHYSICAL)) != 0u || o.avatar < n;
+        // (the beam sphere: no level of detail of the camera moves it; read
+        // once, not once per map)
+        let beam = spheres[sphere_slots() + f.object];
         for (var k = 0u; k < SPOT_MAPS; k++) {
             if ((fl & (F_SPOT << k)) == 0u) {
                 continue;
@@ -533,8 +541,6 @@ fn face_mask(i: u32) -> u32 {
             if ((shelter_bit >> 16u) == (1u << k)) {
                 takes = shelters && !moves;
             } else {
-                // (the beam sphere: no level of detail of the camera moves it)
-                let beam = spheres[sphere_slots() + f.object];
                 tc = beam.xyz;
                 tr = beam.w;
                 takes = spot_caster && spot_resolves(k, tc, tr);
