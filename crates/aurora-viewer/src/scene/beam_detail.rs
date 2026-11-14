@@ -133,15 +133,11 @@ pub fn alpha_tested(pass: super::Pass, blend_casts: bool) -> bool {
     matches!(pass, Pass::Mask | Pass::MaskTwoSided) || (pass == Pass::Blend && blend_casts)
 }
 
-/// The radius the projectors test an object with: half its diagonal. It
-/// comes from the object's scale alone, as the camera's level does
-/// (`SyncCtx::lod_metrics`), not from the bounds of the geometry drawn,
-/// which differ from one level of detail to the next.
-pub fn radius_of(o: &crate::world::objects::Object, now: std::time::Instant) -> f32 {
-    radius_of_scale(o.visual_scale_at(now))
-}
-
-/// Half the diagonal of a box of this scale (at least 5 cm).
+/// The radius the projectors test an object with: half the diagonal of a
+/// box of its scale (at least 5 cm). It comes from the object's scale alone,
+/// as the camera's level does (`SyncCtx::lod_metrics`), not from the bounds
+/// of the geometry drawn, which differ from one level of detail to the next.
+/// The sync stores it (`ObjGpu::beam_radius`) with the origin.
 pub fn radius_of_scale(scale: Vec3) -> f32 {
     (scale.max(Vec3::splat(0.001)) * 0.5).length().max(0.05)
 }

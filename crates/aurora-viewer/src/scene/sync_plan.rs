@@ -71,6 +71,10 @@ pub(super) struct MoveSync {
     /// The centre of the unit box, which no level of detail changes (`Placement::origin`).
     pub(super) origin: Vec3,
     pub(super) radius: f32,
+    /// The beam sphere's radius and whether the projectors cull with it
+    /// (`Placement::beam_radius`, `beam_own`).
+    pub(super) beam_radius: f32,
+    pub(super) beam_own: bool,
     pub(super) owner_avatar: Option<usize>,
     pub(super) mirror: bool,
     /// Placed by the GPU: `model` is relative to this anchor (a rigged
@@ -127,6 +131,14 @@ pub(super) struct Placement {
     /// `center`. A rigged mesh's equals its centre.
     pub(super) origin: Vec3,
     pub(super) radius: f32,
+    /// Half the diagonal of the object's scale box (`beam_detail::radius_of_scale`):
+    /// with `origin`, the sphere the projectors size an object by (its shadow
+    /// level, its texture floor, the trace), which no level of detail changes.
+    pub(super) beam_radius: f32,
+    /// A static prim, sculpt or mesh, whose geometry lies in its unit box at
+    /// every level of detail: the projectors' maps take their casters with
+    /// that same sphere, not with the camera's bounds (`ObjGpu::member_sphere`).
+    pub(super) beam_own: bool,
     pub(super) rigged: bool,
     pub(super) skeleton_owner: Option<(Uuid, usize)>,
     /// Placed by the GPU (anchors.rs): a worn object from its attachment
@@ -510,11 +522,17 @@ impl SyncCtx<'_> {
             Some(_) => points.local_origin,
             None => origin,
         };
+        // (a Linden plant, a flexible prim bending out of its box, the sculpt
+        // placeholder and what is skinned keep the camera's sphere)
+        let beam_own =
+            !rigged && !xf.2 && plant.is_none() && matches!(geom_key, GeomKey::Prim { .. } | GeomKey::Sculpt { .. } | GeomKey::Mesh { .. });
         Placement {
             model,
             center,
             origin,
             radius,
+            beam_radius: super::beam_detail::radius_of_scale(scale),
+            beam_own,
             rigged,
             skeleton_owner,
             anchor: skeleton_anchor.or(point_anchor.map(|a| a.0)),
@@ -620,6 +638,8 @@ impl SyncCtx<'_> {
             center: p.center,
             origin: p.origin,
             radius: p.radius,
+            beam_radius: p.beam_radius,
+            beam_own: p.beam_own,
             owner_avatar: Scene::wearer_avatar(world, idx).map(|(_, i)| i),
             // reflection probe with the box and mirror flags (LLReflectionProbeParams)
             mirror: o.extra.reflection_probe.is_some_and(|p| p.flags & 0x4 != 0 && p.flags & 0x1 != 0),
@@ -670,6 +690,8 @@ impl SyncCtx<'_> {
             center: p.center,
             origin: p.origin,
             radius: p.radius,
+            beam_radius: p.beam_radius,
+            beam_own: p.beam_own,
             owner_avatar: Scene::wearer_avatar(self.world, idx).map(|(_, i)| i),
             mirror: g.mirror,
             anchor: p.anchor,

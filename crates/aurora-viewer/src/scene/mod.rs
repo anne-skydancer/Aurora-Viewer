@@ -441,6 +441,15 @@ pub struct ObjGpu {
     /// or an avatar: equal to `center`.
     pub origin: Vec3,
     pub radius: f32,
+    /// Half the diagonal of its scale box (`beam_detail::radius_of_scale`):
+    /// with `origin`, the sphere the projectors size it by (`beam_sphere`).
+    /// 0 until it is placed, and for an avatar.
+    pub beam_radius: f32,
+    /// The projectors' maps take it as a caster with `origin` and
+    /// `beam_radius` (`member_sphere`): a static prim, sculpt or mesh. The
+    /// others (rigged, avatar, HUD, flexible, plant, sculpt placeholder) are
+    /// taken with the camera's sphere.
+    pub beam_own: bool,
     pub tex_generation: u64,
     /// Avatars: bake slots used by worn attachments (bakes on mesh), whose
     /// system body parts are hidden.
@@ -525,6 +534,23 @@ impl ObjGpu {
         }
     }
 
+    /// The sphere the projectors size the object by: its shadow level, its
+    /// texture floor and the trace (beam_detail.rs). The origin of its
+    /// geometry's space and half the diagonal of its scale box, which no
+    /// level of detail moves; the bounds' sphere until it is placed.
+    pub fn beam_sphere(&self) -> (Vec3, f32) {
+        (self.origin, if self.beam_radius > 0.0 { self.beam_radius } else { self.radius })
+    }
+
+    /// The sphere the projectors' maps take their casters with, on the GPU
+    /// (`CullObject::beam`) and in the CPU lists: `beam_sphere` for an
+    /// object whose geometry lies in its unit box at every level
+    /// (`beam_own`), where it is the same for all of them; the camera's
+    /// sphere for the rest, which still follows the camera's level there.
+    pub fn member_sphere(&self) -> (Vec3, f32) {
+        if self.beam_own { self.beam_sphere() } else { self.sphere() }
+    }
+
     /// Culling sphere: the bounds, or for an avatar its posed body (2.5 m
     /// around its position until posed).
     pub fn sphere(&self) -> (Vec3, f32) {
@@ -581,8 +607,16 @@ impl ObjGpu {
                 fl |= bit;
             }
         }
+        // the beam sphere: in the world, or in the anchor's space like `sphere`
+        // (0 radius: the camera's sphere stands; a posed object has no own)
+        let beam = match (self.beam_own && posed.is_none(), self.anchor) {
+            (false, _) => [0.0; 4],
+            (true, Some(_)) => self.local_origin.extend(self.beam_radius).to_array(),
+            (true, None) => self.origin.extend(self.beam_radius).to_array(),
+        };
         CullObject {
             sphere,
+            beam,
             flags: fl,
             avatar: avatar.map_or(NO_OBJECT, |a| a as u32),
             state: self.cull_state,
@@ -3073,7 +3107,7 @@ impl Scene {
         touched.clear();
         // (after the released slots: a slot reused this frame must not give
         // its old geometry's key to its new object)
-        self.refresh_beam_details(renderer, world, now);
+        self.refresh_beam_details(renderer, world);
         self.touched_tmp = touched;
         self.sync_parcel_crossings(world);
         step(&mut slow, "touched");
@@ -3535,6 +3569,8 @@ impl Scene {
         g.center = m.center;
         g.origin = m.origin;
         g.radius = m.radius;
+        g.beam_radius = m.beam_radius;
+        g.beam_own = m.beam_own;
         g.anchor = m.anchor;
         g.local_center = m.local_center;
         g.local_origin = m.local_origin;
@@ -3916,6 +3952,8 @@ impl Scene {
             g.center = pos;
             g.origin = pos;
             g.radius = radius;
+            g.beam_radius = 0.0;
+            g.beam_own = false;
             g.anchor = None;
             g.posed = None;
             g.wide = None;
@@ -3937,6 +3975,8 @@ impl Scene {
             center,
             origin,
             radius,
+            beam_radius,
+            beam_own,
             rigged,
             skeleton_owner,
             anchor,
@@ -4013,6 +4053,8 @@ impl Scene {
         g.center = center;
         g.origin = origin;
         g.radius = radius;
+        g.beam_radius = beam_radius;
+        g.beam_own = beam_own;
         g.anchor = anchor;
         g.local_center = local_center;
         g.local_origin = local_origin;
@@ -4028,16 +4070,16 @@ impl Scene {
             o.shape_dirty = false;
             o.material_dirty = false;
         }
-        self.refresh_shadow_geom(renderer, world, idx, now);
+        self.refresh_shadow_geom(renderer, world, idx);
     }
 
     /// The usage visit's slice (one object in 30, as the textures' usage is
     /// noted): the shadow level of each object again, since the projectors
     /// may have moved or changed owner of their map.
-    fn refresh_beam_details(&mut self, renderer: &mut Renderer, world: &World, now: Instant) {
+    fn refresh_beam_details(&mut self, renderer: &mut Renderer, world: &World) {
         let phase = (self.frame % 30) as usize;
         for idx in (phase..self.gpu.len()).step_by(30) {
-            self.refresh_shadow_geom(renderer, world, idx, now);
+            self.refresh_shadow_geom(renderer, world, idx);
         }
         if phase == 0 {
             self.note_beam_costs();
@@ -4083,7 +4125,6 @@ impl Scene {
     /// keep the camera's level and are left out.
     pub fn trace_projector_casters(&self, world: &World, eye: Vec3) {
         let mut line = String::new();
-        let now = Instant::now();
         let blend_casts = aurora_render::shadow_cull::blend_casts();
         for slot in self.beams.slots() {
             let (mut n, mut hash) = (0u32, 0xcbf2_9ce4_8422_2325u64);
@@ -4099,7 +4140,8 @@ impl Scene {
                 let Some(o) = world.objects.get(idx) else {
                     continue;
                 };
-                if !self.beams.holding(g.origin, beam_detail::radius_of(o, now)).any(|s| s == slot) {
+                let (origin, radius) = g.beam_sphere();
+                if !self.beams.holding(origin, radius).any(|s| s == slot) {
                     continue;
                 }
                 n += 1;
@@ -4129,7 +4171,7 @@ impl Scene {
     /// Choose, request and bind the geometry object `idx` draws in the
     /// projectors' shadow maps (beam_detail.rs), and write its ranges to the
     /// faces. The camera range stands while the geometry is pending.
-    fn refresh_shadow_geom(&mut self, renderer: &mut Renderer, world: &World, idx: usize, now: Instant) {
+    fn refresh_shadow_geom(&mut self, renderer: &mut Renderer, world: &World, idx: usize) {
         let Some(g) = self.gpu.get(idx) else {
             return;
         };
@@ -4139,8 +4181,9 @@ impl Scene {
         }
         // The sphere the projectors test and size the object by: its origin
         // and its scale, never the bounds of the geometry it is drawn with
-        // (they change with the camera's level of detail).
-        let radius = world.objects.get(idx).map_or(g.radius, |o| beam_detail::radius_of(o, now));
+        // (they change with the camera's level of detail). The GPU and the
+        // CPU lists cull the maps' casters with the same one (`member_sphere`).
+        let (origin, radius) = g.beam_sphere();
         // the texture floor: what the maps cover of its alpha-tested faces
         if beam_detail::eligible(g) {
             let blend_casts = aurora_render::shadow_cull::blend_casts();
@@ -4149,7 +4192,7 @@ impl Scene {
                 .iter()
                 .filter(|f| beam_detail::alpha_tested(f.pass, blend_casts) && !f.tex_id.is_nil())
             {
-                if let Some(px) = self.beams.texels(g.origin, radius, f.repeats) {
+                if let Some(px) = self.beams.texels(origin, radius, f.repeats) {
                     self.textures.note_usage_beam(&f.tex_id, px);
                 }
             }
@@ -4157,7 +4200,7 @@ impl Scene {
         let camera = g.geom.filter(|_| beam_detail::eligible(g) && !g.faces.is_empty());
         let mut desired = None;
         if let Some(cam) = camera
-            && let Some(level) = self.beams.level(g.origin, radius, self.lod_factor)
+            && let Some(level) = self.beams.level(origin, radius, self.lod_factor)
             && let Some(shadow) = beam_detail::shadow_key(cam, level)
         {
             // (a mesh without that level draws another one: compared and
@@ -4971,6 +5014,8 @@ impl Scene {
         g.center = pos;
         g.origin = pos;
         g.radius = 1.2;
+        g.beam_radius = 0.0;
+        g.beam_own = false;
         g.posed_sphere = posed;
     }
 
@@ -5448,6 +5493,9 @@ impl Scene {
             else {
                 return l;
             };
+            // what the projectors' maps test a caster with: the same sphere
+            // as the GPU (`CullObject::beam`), whatever level the camera draws
+            let spot_sphere = g.member_sphere();
             if in_view {
                 l.visible += 1;
             }
@@ -5566,8 +5614,8 @@ impl Scene {
                                 base_vertex,
                                 ..cmd
                             }),
-                            center: sc,
-                            radius: sr,
+                            center: spot_sphere.0,
+                            radius: spot_sphere.1,
                             alpha: pass.record_flags() != 0,
                         });
                     }
@@ -8286,6 +8334,15 @@ mod tests {
             g.rigged = rand(6) == 0;
             g.hud = rand(40) == 0;
             g.skeleton_owner = (rand(10) == 0).then(Uuid::new_v4);
+            // a third of the plain objects have their own beam sphere: the
+            // origin of their geometry and half their scale diagonal, which
+            // the level of detail bounds (`center`, `radius`) do not follow
+            if !g.is_avatar && !g.rigged && rand(3) == 0 {
+                g.beam_own = true;
+                g.beam_radius = 0.05 + rand(300) as f32 * 0.1;
+                g.origin = g.center + Vec3::new(rand(60) as f32 - 30.0, rand(60) as f32 - 30.0, rand(20) as f32 - 10.0);
+                g.local_origin = g.origin - g.anchor.map_or(Vec3::ZERO, |a| anchor_at[a.matrix as usize]);
+            }
             let faces = rand(3) as usize;
             g.faces = (0..faces).map(|_| test_face(passes[rand(6) as usize], false)).collect();
             let _ = i;
@@ -8352,6 +8409,7 @@ mod tests {
         frame.sizes[1] = n as u32;
         let objects: Vec<CullObject> = gpu.iter().enumerate().map(|(i, g)| g.cull_object(i)).collect();
         let spheres = aurora_render::gpu_cull::world_spheres(&objects, &palettes, &[], &[]);
+        let beams = aurora_render::gpu_cull::world_beams(&objects, &palettes, &spheres);
         let mut faces = Vec::new();
         let mut owner = Vec::new();
         for (i, g) in gpu.iter().enumerate() {
@@ -8364,7 +8422,7 @@ mod tests {
         for (k, &(i, fi)) in owner.iter().enumerate() {
             let g = &gpu[i];
             let f = &g.faces[fi];
-            let (m, visible) = face_bins(&frame, &faces, &objects, &spheres, k);
+            let (m, visible) = face_bins(&frame, &faces, &objects, &spheres, &beams, k);
             let vis = object_visibility(g, i, &ctx, |a| full.get(a).copied().unwrap_or(true), |a| complex[a], |a| loading[a]);
             let solid = matches!(f.pass, Pass::Opaque | Pass::OpaqueTwoSided | Pass::Mask | Pass::MaskTwoSided);
             let (main, casts, refl, probe, in_view) = match &vis {
@@ -8397,7 +8455,11 @@ mod tests {
             // beam's own resolution instead
             // (the frame has BLEND_CASTS: blended faces cast too)
             let spot_rules = f.pass != Pass::Hidden;
-            let (sc, sr) = g.sphere();
+            // (by the beam sphere, the same one the CPU lists use)
+            let (sc, sr) = g.member_sphere();
+            if g.beam_own && g.anchor.is_none() {
+                assert_eq!(beams[i], (sc, sr), "the GPU's beam sphere is the CPU's, object {i}");
+            }
             let resolves = aurora_render::gpu_cull::spot_resolves_at(frame.spot_apex[0], frame.spot_scale[0][0], sc, sr);
             let spot = vis.as_ref().is_some_and(|v| v.spot_casts) && spot_rules && resolves;
             assert_eq!(m >> BIN_SPOT & 1 == 1, spot, "projector map, object {i}");
@@ -8410,6 +8472,10 @@ mod tests {
             "the scene exercises the tests ({drawn} drawn, {casting} casting)"
         );
         assert!(spotted > 50, "the projector map takes casters ({spotted})");
+        assert!(
+            gpu.iter().any(|g| g.beam_own && g.member_sphere() != g.sphere()),
+            "some objects have a beam sphere other than their bounds"
+        );
     }
 
     /// The CPU lists give a projector's map the same casters wherever the
@@ -8423,6 +8489,31 @@ mod tests {
             // from a speck to a house
             g.radius = 0.001 + (i % 7) as f32 * 3.0;
             g.faces = vec![test_face(passes[i % 3], false)];
+        }
+        // two bounds of one object, as two levels of detail give: the sphere
+        // the maps test it with stays the same when it has a beam sphere of
+        // its own, and follows the bounds when it has not
+        for (i, g) in gpu.iter_mut().enumerate() {
+            g.origin = g.center + Vec3::new(0.0, 0.0, 0.25);
+            g.beam_radius = 0.5 + (i % 4) as f32;
+            g.beam_own = i % 2 == 0;
+            let before = g.member_sphere();
+            let table = g.cull_object(i).beam;
+            let (center, radius) = (g.center, g.radius);
+            // another level: other bounds, the same origin and scale
+            g.center += Vec3::new(0.3, -0.2, 0.1);
+            g.radius *= 0.8;
+            if g.beam_own {
+                assert_eq!(g.member_sphere(), before, "object {i}");
+                assert_eq!(g.cull_object(i).beam, table, "object {i}");
+                assert_eq!(before, (g.origin, g.beam_radius));
+                assert_eq!(table, g.origin.extend(g.beam_radius).to_array());
+            } else {
+                assert_ne!(g.member_sphere(), before, "object {i}");
+                assert_eq!(g.member_sphere(), (g.center, g.radius));
+                assert_eq!(table, [0.0; 4], "no beam sphere for the camera's");
+            }
+            (g.center, g.radius) = (center, radius);
         }
         let fov = 1.0f32;
         let proj = glam::camera::rh::proj::directx::perspective_infinite_reverse(fov, 16.0 / 9.0, 0.1);
