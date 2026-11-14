@@ -269,6 +269,14 @@ impl Scene {
         } else {
             self.spot_shadows.clear();
         }
+        // the beams the casters' shadow detail follows (beam_detail.rs): the
+        // projectors holding a map, as assigned, whatever the camera does
+        self.beams.set(
+            shadows
+                .iter()
+                .flatten()
+                .filter_map(|s| lights.get(s.light as usize)?.light.projector),
+        );
         let active = shadows.iter().flatten().count();
         if active != shadow_map_count {
             log::info!("projector shadow maps active: {active}, limit {}", view.projector_shadow_limit);

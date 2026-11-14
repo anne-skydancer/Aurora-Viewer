@@ -2758,6 +2758,7 @@ pub(crate) mod tests {
             rez_glow: false,
             system: None,
             first_person_hidden: false,
+            shadow: None,
         };
         for idx in [front, back] {
             scene.gpu[idx].geom = Some(key);

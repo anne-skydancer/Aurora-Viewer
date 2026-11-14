@@ -11,6 +11,7 @@ pub mod avatar;
 pub mod avatar_snow;
 pub mod avatar_studio;
 pub mod banlines;
+mod beam_detail;
 pub mod blend_order;
 mod blender_live;
 pub mod body_physics;
@@ -382,6 +383,10 @@ pub struct FaceDraw {
     /// Part of a system avatar body: its pass follows the avatar pool.
     pub system: Option<SystemPart>,
     pub first_person_hidden: bool,
+    /// Index range (first index, count, base vertex) this face draws in the
+    /// projectors' shadow maps, from the object's shadow geometry
+    /// (beam_detail.rs); None: the camera's (`cmd`).
+    pub shadow: Option<(u32, u32, i32)>,
 }
 
 impl FaceDraw {
@@ -424,6 +429,10 @@ pub struct ObjGpu {
     pub material_ids: Vec<Uuid>,
     pub geom: Option<GeomKey>,
     pub wanted_geom: Option<GeomKey>,
+    /// The geometry its faces draw in the projectors' shadow maps, another
+    /// level of detail of its shape than `geom`'s (beam_detail.rs); held
+    /// like `geom`.
+    pub shadow_geom: Option<GeomKey>,
     pub lod: u8,
     pub center: Vec3,
     pub radius: f32,
@@ -735,7 +744,7 @@ fn note_face_usage(usage: &mut Vec<(Uuid, f32, bool)>, f: &FaceDraw, px: f32, in
 
 /// GPU face table entry of a face of object `idx`.
 fn cull_face(f: &FaceDraw, idx: usize, first: bool) -> CullFace {
-    CullFace {
+    let mut face = CullFace {
         index_count: f.cmd.index_count,
         first_index: f.cmd.first_index,
         base_vertex: f.cmd.base_vertex,
@@ -751,7 +760,9 @@ fn cull_face(f: &FaceDraw, idx: usize, first: bool) -> CullFace {
                 0
             },
         shadow: [0; 3],
-    }
+    };
+    face.set_shadow_range(f.shadow);
+    face
 }
 
 /// Faces listed by the CPU even with the GPU lists: blended (sorted back
@@ -1026,6 +1037,9 @@ pub struct Scene {
     /// Projectors cast shadows (the setting, a nonzero budget, the sun's
     /// shadows on), as of the last light list (`lights.rs`).
     projector_shadows_on: bool,
+    /// The projectors holding a shadow map as of the last frame: what the
+    /// shadow level of detail of the casters follows (beam_detail.rs).
+    beams: beam_detail::Beams,
     /// Texture each projector of the frame's light list holds (object
     /// index: texture, slot), see `lights.rs`.
     light_textures: HashMap<usize, (Uuid, u32)>,
@@ -1696,6 +1710,7 @@ impl Scene {
             light_objects: Default::default(),
             projector_objects: Default::default(),
             projector_shadows_on: false,
+            beams: Default::default(),
             light_textures: HashMap::new(),
             light_scratch: Default::default(),
             spot_shadows: Default::default(),
@@ -2275,6 +2290,9 @@ impl Scene {
             self.textures.release(&t);
         }
         if let Some(k) = g.geom.take() {
+            self.geom_unref(k);
+        }
+        if let Some(k) = g.shadow_geom.take() {
             self.geom_unref(k);
         }
         for k in g.morph_geoms.drain(..) {
@@ -3011,6 +3029,7 @@ impl Scene {
         // the GPU object table covers every slot (an attachment's avatar
         // index is always in it, as in the CPU lists)
         renderer.cull.objects.ensure_len(self.gpu.len());
+        self.refresh_beam_details(renderer, world);
         let now = self.held_at.unwrap_or_else(Instant::now);
         let n = world.objects.slots.len();
         let agent = world.agent_id;
@@ -3401,6 +3420,17 @@ impl Scene {
         // (new faces: what the cursor is over may have changed)
         self.pick.changed(idx);
         self.fresh_usage.insert(idx);
+        // (the shadow ranges follow the faces through a rebuild at another
+        // camera level: the shadow geometry is of the same shape, kept; one
+        // of another shape is let go)
+        if let Some(k) = g.shadow_geom
+            && !g.geom.is_some_and(|c| beam_detail::same_shape(c, k))
+        {
+            g.shadow_geom = None;
+            self.geom_unref(k);
+        }
+        let shadow = g.shadow_geom.and_then(|k| self.geom_ready(&k));
+        beam_detail::apply(&mut g.faces, shadow.as_deref());
         let alpha = &self.textures.alpha_by_slot;
         let channel = &self.textures.alpha_channel_by_slot;
         let mut last_slot = None;
@@ -3969,6 +3999,72 @@ impl Scene {
             o.shape_dirty = false;
             o.material_dirty = false;
         }
+        self.refresh_shadow_geom(renderer, world, idx);
+    }
+
+    /// The usage visit's slice (one object in 30, as the textures' usage is
+    /// noted): the shadow level of each object again, since the projectors
+    /// may have moved or changed owner of their map.
+    fn refresh_beam_details(&mut self, renderer: &mut Renderer, world: &World) {
+        let phase = (self.frame % 30) as usize;
+        for idx in (phase..self.gpu.len()).step_by(30) {
+            self.refresh_shadow_geom(renderer, world, idx);
+        }
+    }
+
+    /// Choose, request and bind the geometry object `idx` draws in the
+    /// projectors' shadow maps (beam_detail.rs), and write its ranges to the
+    /// faces. The camera range stands while the geometry is pending.
+    fn refresh_shadow_geom(&mut self, renderer: &mut Renderer, world: &World, idx: usize) {
+        let Some(g) = self.gpu.get(idx) else {
+            return;
+        };
+        let held = g.shadow_geom;
+        let camera = g.geom.filter(|_| beam_detail::eligible(g) && !g.faces.is_empty());
+        let desired = camera
+            .and_then(|cam| {
+                let level = self.beams.level(g.center, g.radius, self.lod_factor)?;
+                beam_detail::shadow_key(cam, level)
+            })
+            .filter(|k| Some(*k) != camera);
+        if desired.is_none() && held.is_none() {
+            return;
+        }
+        let (mut ready, failed) = match desired {
+            Some(k) => (self.geom_ready(&k).is_some(), self.geom_failed(&k)),
+            None => (false, false),
+        };
+        if let Some(k) = desired
+            && !ready
+            && !failed
+            && let Some(o) = world.objects.get(idx)
+        {
+            // (shadow-only geometry: the lowest rank of a mesh download)
+            ready = self.request_geom(k, o, MeshNeed { px: 1.0, own: false });
+        }
+        match beam_detail::plan(held, desired, ready, failed) {
+            beam_detail::Step::Keep => return,
+            beam_detail::Step::Bind(k) => {
+                self.geom_ref(k);
+                self.gpu[idx].shadow_geom = Some(k);
+            }
+            beam_detail::Step::Drop => self.gpu[idx].shadow_geom = None,
+        }
+        if let Some(old) = held {
+            self.geom_unref(old);
+        }
+        self.write_shadow_ranges(renderer, idx);
+    }
+
+    /// Write the shadow ranges of the faces of object `idx` from its shadow
+    /// geometry (cleared when it holds none), and their GPU face entries.
+    fn write_shadow_ranges(&mut self, renderer: &mut Renderer, idx: usize) {
+        let geom = self.gpu[idx].shadow_geom.and_then(|k| self.geom_ready(&k));
+        let g = &mut self.gpu[idx];
+        beam_detail::apply(&mut g.faces, geom.as_deref());
+        for (fi, f) in g.faces.iter().enumerate() {
+            renderer.records.set_face(f.record, cull_face(f, idx, fi == 0));
+        }
     }
 
     /// What the GPU poses the bounds of a rigged mesh from, when it places
@@ -4355,6 +4451,7 @@ impl Scene {
                 rez_glow: false,
                 system: None,
                 first_person_hidden: false,
+                shadow: None,
             });
         }
         for t in old_tex {
@@ -4681,6 +4778,7 @@ impl Scene {
                     rez_glow: false,
                     system: Some(SystemPart::of(part.name)),
                     first_person_hidden: matches!(part.name, "head" | "hair" | "eyelashes" | "eye_left" | "eye_right"),
+                    shadow: None,
                 });
             }
             for t in old_tex {
@@ -5296,7 +5394,13 @@ impl Scene {
                     // whatever the camera reaches (`ObjVis::spot_casts`)
                     if spot_casts && (pass != Pass::Blend || g.rigged || g.is_avatar || blend_casts) {
                         l.spot.push(ShadowCaster {
-                            cmd,
+                            // (the level of detail of the beam, not the camera's)
+                            cmd: f.shadow.map_or(cmd, |(first_index, index_count, base_vertex)| DrawCmd {
+                                index_count,
+                                first_index,
+                                base_vertex,
+                                ..cmd
+                            }),
                             center: sc,
                             radius: sr,
                             alpha: pass.record_flags() != 0,
@@ -7636,6 +7740,7 @@ mod tests {
             rez_glow: false,
             system: None,
             first_person_hidden: false,
+            shadow: None,
         }
     }
 
