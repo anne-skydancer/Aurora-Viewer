@@ -65,6 +65,7 @@ const PASS_MASK_2S: u32 = 4u;
 const PASS_BLEND: u32 = 5u;
 const PASS_WATER_EXCLUSION: u32 = 6u;
 const FACE_FIRST: u32 = 8u;
+const FACE_SHADOW_RANGE: u32 = 32u;
 
 // CullObject.flags
 const OBJ_ACTIVE: u32 = 1u;
@@ -121,9 +122,10 @@ struct CullFace {
     base_vertex: i32,
     object: u32,
     bits: u32,
-    _p0: u32,
-    _p1: u32,
-    _p2: u32,
+    // the range of the projectors' shadow bins (FACE_SHADOW_RANGE)
+    shadow_index_count: u32,
+    shadow_first_index: u32,
+    shadow_base_vertex: i32,
 }
 
 struct CullObject {
@@ -365,8 +367,12 @@ var<workgroup> wg_shadow: array<atomic<u32>, SHADOW_STATS>;
 // past it is drawn with no index (write_args), counted once per frame in
 // COUNT_CLAMPED (cs_classify) and left out of the triangle statistics.
 fn index_range_fits(f: CullFace) -> bool {
+    return range_fits(f.first_index, f.index_count);
+}
+
+fn range_fits(first_index: u32, index_count: u32) -> bool {
     let index_limit = frame.groups.z;
-    return f.first_index <= index_limit && f.index_count <= index_limit - f.first_index;
+    return first_index <= index_limit && index_count <= index_limit - first_index;
 }
 
 // Bins of face `i` this frame (0: not drawn anywhere).
@@ -626,18 +632,27 @@ fn pack_bins(m: u32) -> BinPack {
     return v;
 }
 
-fn write_args(slot: u32, f: CullFace, rec: u32, instances: u32) {
+// `projector`: a projector's shadow bin (not the rain's shelter map): a face
+// with a shadow range draws it there when it fits the index buffer, else the
+// camera's range (a stale range after the arena grew must not draw another
+// mesh's vertices).
+fn write_args(slot: u32, f: CullFace, rec: u32, instances: u32, projector: bool) {
     let a = slot * 5u;
     var first_index = f.first_index;
     var index_count = f.index_count;
-    if (!index_range_fits(f)) {
+    var base_vertex = f.base_vertex;
+    if (projector && (f.bits & FACE_SHADOW_RANGE) != 0u && range_fits(f.shadow_first_index, f.shadow_index_count)) {
+        first_index = f.shadow_first_index;
+        index_count = f.shadow_index_count;
+        base_vertex = f.shadow_base_vertex;
+    } else if (!index_range_fits(f)) {
         first_index = min(first_index, frame.groups.z);
         index_count = 0u;
     }
     args[a] = index_count;
     args[a + 1u] = instances;
     args[a + 2u] = first_index;
-    args[a + 3u] = bitcast<u32>(f.base_vertex);
+    args[a + 3u] = bitcast<u32>(base_vertex);
     args[a + 4u] = rec;
 }
 
@@ -677,7 +692,9 @@ fn cs_scatter(
     let high = ranks[lid].high - own.high;
     let f = faces[i];
     let cap = frame.sizes.z;
-    let occlusion = (frame.sizes.w & F_OCCLUSION) != 0u;
+    let fl = frame.sizes.w;
+    let shelter_map = min(frame.groups.w, 15u);
+    let occlusion = (fl & F_OCCLUSION) != 0u;
     for (var b = 0u; b < BINS; b++) {
         if (((m >> b) & 1u) == 0u) {
             continue;
@@ -690,7 +707,9 @@ fn cs_scatter(
         }
         let rank = (packed >> ((b & 3u) * 8u)) & 0xffu;
         let pos = group_data[wid.x * BINS + b] + rank;
-        write_args(b * cap + pos, f, i, 1u);
+        // the projectors' bins, but not the rain's shelter map
+        let projector = b >= BIN_SPOT && b < BIN_SPOT + 16u && !((fl & F_SPOT_SHELTER) != 0u && b == BIN_SPOT + shelter_map);
+        write_args(b * cap + pos, f, i, 1u, projector);
         if (b < MAIN_BINS && occlusion) {
             // phase 1 prepass: what was visible last frame
             var was = 1u;
@@ -699,7 +718,7 @@ fn cs_scatter(
             }
             if (was != 0u) {
                 let k = atomicAdd(&counts[COUNT_PRE1 + b], 1u);
-                write_args((REGION_PRE1 + b) * cap + k, f, i, 1u);
+                write_args((REGION_PRE1 + b) * cap + k, f, i, 1u, false);
             }
         }
     }

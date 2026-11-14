@@ -51,6 +51,9 @@ pub mod pass {
 pub const FACE_FIRST: u32 = 8;
 /// System head, eyes, hair or eyelashes: hidden only in the main first-person view.
 pub const FACE_FIRST_PERSON_HIDDEN: u32 = 16;
+/// `CullFace::shadow` holds the range the projectors' shadow bins draw
+/// (never the rain's shelter map, the camera, reflection, probe or sun bins).
+pub const FACE_SHADOW_RANGE: u32 = 32;
 
 /// `CullObject::flags`.
 pub mod object_flags {
@@ -133,6 +136,44 @@ pub fn bound_index_range(first_index: u32, index_count: u32, index_limit: u32) -
     let safe_first = first_index.min(index_limit);
     let valid = first_index <= index_limit && index_count <= index_limit - safe_first;
     (safe_first, if valid { index_count } else { 0 }, !valid)
+}
+
+impl CullFace {
+    /// The shadow range as a draw range.
+    pub fn shadow_range(&self) -> (u32, u32, i32) {
+        (self.shadow[1], self.shadow[0], self.shadow[2] as i32)
+    }
+
+    /// Set the shadow range (and its flag), or clear it.
+    pub fn set_shadow_range(&mut self, range: Option<(u32, u32, i32)>) {
+        match range {
+            Some((first, count, base)) => {
+                self.shadow = [count, first, base as u32];
+                self.bits |= FACE_SHADOW_RANGE;
+            }
+            None => {
+                self.shadow = [0; 3];
+                self.bits &= !FACE_SHADOW_RANGE;
+            }
+        }
+    }
+
+    /// The range `cs_scatter` writes for the face in a bin (`write_args`):
+    /// the shadow range in a projector's bin when the face has one and it
+    /// fits in the index buffer, else the camera range. Both are bound to
+    /// the index buffer, so a stale range after the arena grew draws
+    /// nothing instead of another mesh's vertices. `projector_bin` is false
+    /// for the rain's shelter map and every non-projector bin.
+    pub fn args_range(&self, projector_bin: bool, index_limit: u32) -> (u32, u32, i32) {
+        if projector_bin && self.bits & FACE_SHADOW_RANGE != 0 {
+            let (first, count, base) = self.shadow_range();
+            if !bound_index_range(first, count, index_limit).2 {
+                return (first, count, base);
+            }
+        }
+        let (first, count, _) = bound_index_range(self.first_index, self.index_count, index_limit);
+        (first, count, self.base_vertex)
+    }
 }
 
 /// True when `count` clamped faces is more than any count logged before
@@ -225,9 +266,14 @@ pub struct CullFace {
     /// Object slot in `GpuCull::objects`, `NO_OBJECT` for records drawn
     /// from the CPU lists only (terrain, water, ban lines...).
     pub object: u32,
-    /// `pass` | `FACE_FIRST`.
+    /// `pass` | `FACE_FIRST` | `FACE_SHADOW_RANGE`.
     pub bits: u32,
-    pub _pad: [u32; 3],
+    /// The face's index range in the projector shadow maps, read when
+    /// `bits` has `FACE_SHADOW_RANGE`: `[index_count, first_index,
+    /// base_vertex as u32]`. A level of detail chosen from the projector,
+    /// not from the camera (scene/beam_detail.rs); the same record, so the
+    /// same matrix and material.
+    pub shadow: [u32; 3],
 }
 
 impl CullFace {
@@ -237,7 +283,7 @@ impl CullFace {
         base_vertex: 0,
         object: NO_OBJECT,
         bits: 0,
-        _pad: [0; 3],
+        shadow: [0; 3],
     };
 }
 
@@ -1564,12 +1610,41 @@ mod tests {
     }
 
     #[test]
+    fn the_shadow_range_is_used_by_projector_bins_only_and_checked_for_fit() {
+        let mut f = CullFace {
+            index_count: 6,
+            first_index: 10,
+            base_vertex: 3,
+            ..CullFace::NONE
+        };
+        assert_eq!(f.args_range(true, 100), (10, 6, 3), "no shadow range: the camera's");
+        f.set_shadow_range(Some((40, 30, -7)));
+        assert_eq!(f.args_range(true, 100), (40, 30, -7));
+        assert_eq!(f.args_range(false, 100), (10, 6, 3), "other bins keep the camera range");
+        // stale after the arena grew: the camera range, not the shadow one
+        assert_eq!(f.args_range(true, 60), (10, 6, 3));
+        // both stale: nothing drawn
+        assert_eq!(f.args_range(true, 8), (8, 0, 3));
+        f.set_shadow_range(None);
+        assert_eq!((f.shadow, f.bits & FACE_SHADOW_RANGE), ([0; 3], 0));
+    }
+
+    #[test]
     fn layouts_match_wgsl() {
         let src = include_str!("shaders/cull.wgsl");
         assert_eq!(std::mem::size_of::<CullFace>(), 32);
         assert_eq!(
             wgsl_fields(src, "CullFace"),
-            ["index_count", "first_index", "base_vertex", "object", "bits", "_p0", "_p1", "_p2"]
+            [
+                "index_count",
+                "first_index",
+                "base_vertex",
+                "object",
+                "bits",
+                "shadow_index_count",
+                "shadow_first_index",
+                "shadow_base_vertex"
+            ]
         );
         assert_eq!(std::mem::size_of::<CullObject>(), 48);
         assert_eq!(
@@ -1706,7 +1781,7 @@ mod tests {
                 .trim_end_matches('u');
             v.parse().unwrap_or_else(|_| panic!("{name}: {v}"))
         };
-        let pairs: [(&str, u32); 52] = [
+        let pairs: [(&str, u32); 53] = [
             ("F_PROBE_SHADOW", frame_flags::PROBE_SHADOW),
             ("F_FIRST_PERSON", frame_flags::FIRST_PERSON),
             ("F_SHOW_SELF", frame_flags::SHOW_SELF),
@@ -1745,6 +1820,7 @@ mod tests {
             ("PASS_MASK_2S", pass::MASK_2S),
             ("PASS_BLEND", pass::BLEND),
             ("FACE_FIRST", FACE_FIRST),
+            ("FACE_SHADOW_RANGE", FACE_SHADOW_RANGE),
             ("OBJ_ACTIVE", object_flags::ACTIVE),
             ("OBJ_AVATAR", object_flags::AVATAR),
             ("OBJ_RIGGED", object_flags::RIGGED),
@@ -1942,7 +2018,7 @@ mod tests {
                 base_vertex: 0,
                 object: i,
                 bits: FACE_FIRST | pass::OPAQUE,
-                _pad: [0; 3],
+                shadow: [0; 3],
             })
             .collect();
         let sphere = |p: [f32; 3], r: f32| CullObject {
@@ -1999,7 +2075,7 @@ mod tests {
             base_vertex: 0,
             object: 0,
             bits: FACE_FIRST | pass::OPAQUE,
-            _pad: [0; 3],
+            shadow: [0; 3],
         }];
         let far = CullObject {
             sphere: [100.0, 0.0, 0.0, 1.0],
@@ -2029,7 +2105,7 @@ mod tests {
                 base_vertex: 0,
                 object: i,
                 bits: FACE_FIRST | pass::OPAQUE,
-                _pad: [0; 3],
+                shadow: [0; 3],
             })
             .collect();
         let sphere = |p: [f32; 3], r: f32| CullObject {
@@ -2625,14 +2701,21 @@ mod tests {
                 if rand(20) == 0 {
                     return CullFace::NONE;
                 }
-                CullFace {
+                let mut face = CullFace {
                     index_count: 3 + 3 * rand(100),
                     first_index: rand(100_000),
                     base_vertex: rand(100_000) as i32,
                     object: rand(n_obj),
                     bits: rand(7) | if rand(4) == 0 { FACE_FIRST } else { 0 } | if rand(4) == 0 { FACE_FIRST_PERSON_HIDDEN } else { 0 },
-                    _pad: [0; 3],
+                    shadow: [0; 3],
+                };
+                // a third of the faces have a shadow range; some of them stale
+                // (past the index buffer, as after the arena grew)
+                if rand(3) == 0 {
+                    let first = if rand(8) == 0 { 150_000 + rand(100_000) } else { rand(100_000) };
+                    face.set_shadow_range(Some((first, 3 + 3 * rand(50), rand(100_000) as i32)));
                 }
+                face
             })
             .collect();
         // This visible opaque face deliberately points beyond the bound
@@ -2701,6 +2784,9 @@ mod tests {
         )
         .map(|p| p.to_array());
         frame.probe_eye = [0.0, 40.0, 0.0, 40.0];
+        // the last projector map is the rain's shelter: it keeps the camera range
+        frame.sizes[3] |= frame_flags::SPOT_SHELTER;
+        frame.groups[3] = SPOT_SHADOWS as u32 - 1;
         cull.prepare(&device, &queue, n_faces, tables.objects.len(), 200_000, frame);
         let mut f = frame;
         f.sizes[0] = n_faces as u32;
@@ -2759,7 +2845,7 @@ mod tests {
         }
         assert!(expect.iter().take(MAIN_BINS + 3).all(|e| !e.is_empty()), "every bin used");
         assert!(
-            expect[BIN_SPOT..BIN_SPOT + SPOT_SHADOWS].iter().all(|e| !e.is_empty()),
+            expect[BIN_SPOT..BIN_SPOT + SPOT_SHADOWS - 1].iter().all(|e| !e.is_empty()),
             "every projector shadow bin used"
         );
         assert!(
@@ -2804,8 +2890,13 @@ mod tests {
             for (j, &rec) in e.iter().enumerate() {
                 let a = &args[(b * cap + j) * 5..(b * cap + j) * 5 + 5];
                 let fc = &faces[rec as usize];
-                let (first_index, index_count, _) = bound_index_range(fc.first_index, fc.index_count, 200_000);
-                assert_eq!(a, [index_count, 1, first_index, fc.base_vertex as u32, rec], "bin {b} slot {j}");
+                // the projectors' bins draw the shadow range, the shelter map's
+                // and every other bin the camera's
+                let shelter =
+                    (f.sizes[3] & frame_flags::SPOT_SHELTER != 0).then(|| BIN_SPOT + (f.groups[3] as usize).min(SPOT_SHADOWS - 1));
+                let projector = (BIN_SPOT..BIN_SPOT + SPOT_SHADOWS).contains(&b) && Some(b) != shelter;
+                let (first_index, index_count, base_vertex) = fc.args_range(projector, 200_000);
+                assert_eq!(a, [index_count, 1, first_index, base_vertex as u32, rec], "bin {b} slot {j}");
             }
             if b < MAIN_BINS {
                 // phase 1 prepass list: the bin's draws visible last frame, any order

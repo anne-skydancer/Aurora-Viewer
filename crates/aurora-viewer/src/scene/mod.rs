@@ -750,7 +750,7 @@ fn cull_face(f: &FaceDraw, idx: usize, first: bool) -> CullFace {
             } else {
                 0
             },
-        _pad: [0; 3],
+        shadow: [0; 3],
     }
 }
 
