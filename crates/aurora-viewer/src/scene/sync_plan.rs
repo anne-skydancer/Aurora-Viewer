@@ -135,8 +135,9 @@ pub(super) struct Placement {
     /// with `origin`, the sphere the projectors size an object by (its shadow
     /// level, its texture floor, the trace), which no level of detail changes.
     pub(super) beam_radius: f32,
-    /// A static prim, sculpt or mesh, whose geometry lies in its unit box at
-    /// every level of detail: the projectors' maps take their casters with
+    /// A static prim, sculpt or mesh, whose geometry lies in its scale box's
+    /// sphere at every level of detail (`beam_detail::prim_in_unit_box`,
+    /// `bounds_in_sphere`): the projectors' maps take their casters with
     /// that same sphere, not with the camera's bounds (`ObjGpu::member_sphere`).
     pub(super) beam_own: bool,
     pub(super) rigged: bool,
@@ -452,6 +453,7 @@ impl SyncCtx<'_> {
                 )
             })
             .flatten();
+        let unbind_known = unbind.is_some();
         let unbind = unbind.unwrap_or(Mat4::IDENTITY);
         let world_model = match (skeleton, plant) {
             (Some((_, _, model)), _) => model,
@@ -524,8 +526,20 @@ impl SyncCtx<'_> {
         };
         // (a Linden plant, a flexible prim bending out of its box, the sculpt
         // placeholder and what is skinned keep the camera's sphere)
-        let beam_own =
-            !rigged && !xf.2 && plant.is_none() && matches!(geom_key, GeomKey::Prim { .. } | GeomKey::Sculpt { .. } | GeomKey::Mesh { .. });
+        // (and a shape that leaves its unit box: a sheared prim, a mesh whose
+        // bounds pass its scale box, a skinned mesh with no bind shape yet)
+        let beam_own = !rigged
+            && !xf.2
+            && plant.is_none()
+            && super::beam_detail::own_kind(geom_key)
+            && match geom_key {
+                GeomKey::Prim { .. } => {
+                    super::beam_detail::prim_in_unit_box(&o.visual_volume())
+                        && super::beam_detail::bounds_in_sphere(geom.min, geom.max, scale)
+                }
+                _ if skinned => unbind_known,
+                _ => super::beam_detail::bounds_in_sphere(geom.min, geom.max, scale),
+            };
         Placement {
             model,
             center,

@@ -11751,10 +11751,13 @@ What the inventory must show with these scenarios:
   number of its casters and a hash of what each is drawn with there (object,
   level of detail of its geometry in the map, level of its alpha-tested
   textures): after the shade has loaded, the hash is the same on every line
-  of the dolly, whatever the camera does (the maps' casters, their level and
-  their textures all read one sphere per object, its origin and half its
-  scale diagonal; trees, grass, flexible prims, rigged meshes, avatars and
-  HUDs keep the camera's bounds for which maps hold them). Without the texture floor
+  of the dolly, whatever the camera does (for a static prim, sculpt or mesh
+  that keeps to its unit box, the maps' casters, their level and their
+  textures all read one sphere per object, its origin and half its scale
+  diagonal; the count is made with the sphere the maps use, so trees, grass,
+  flexible prims, the sculpt placeholder, sheared prims, attachments and
+  avatars, which keep the camera's bounds for which maps hold them, can
+  honestly change it). Without the texture floor
   (`note_usage_beam` left out) the hash changes twice as the camera
   comes in (the texture is first seen from afar). Rigged meshes, avatars
   and HUDs keep the camera's level and are not in the hash; flexible prims,

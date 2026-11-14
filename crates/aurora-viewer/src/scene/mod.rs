@@ -446,9 +446,10 @@ pub struct ObjGpu {
     /// 0 until it is placed, and for an avatar.
     pub beam_radius: f32,
     /// The projectors' maps take it as a caster with `origin` and
-    /// `beam_radius` (`member_sphere`): a static prim, sculpt or mesh. The
-    /// others (rigged, avatar, HUD, flexible, plant, sculpt placeholder) are
-    /// taken with the camera's sphere.
+    /// `beam_radius` (`member_sphere`): a static prim, sculpt or mesh that
+    /// keeps to its unit box. The others (rigged, avatar, HUD, flexible,
+    /// plant, sculpt placeholder, a sheared prim) are taken with the
+    /// camera's sphere.
     pub beam_own: bool,
     pub tex_generation: u64,
     /// Avatars: bake slots used by worn attachments (bakes on mesh), whose
@@ -544,9 +545,11 @@ impl ObjGpu {
 
     /// The sphere the projectors' maps take their casters with, on the GPU
     /// (`CullObject::beam`) and in the CPU lists: `beam_sphere` for an
-    /// object whose geometry lies in its unit box at every level
-    /// (`beam_own`), where it is the same for all of them; the camera's
-    /// sphere for the rest, which still follows the camera's level there.
+    /// object whose geometry lies in that sphere at every level
+    /// (`beam_own`: a static prim, sculpt or mesh that keeps to its unit box,
+    /// `beam_detail::prim_in_unit_box`, `bounds_in_sphere`), where it is the
+    /// same for all of them; the camera's sphere for the rest, which still
+    /// follows the camera's level there.
     pub fn member_sphere(&self) -> (Vec3, f32) {
         if self.beam_own { self.beam_sphere() } else { self.sphere() }
     }
@@ -4140,7 +4143,8 @@ impl Scene {
                 let Some(o) = world.objects.get(idx) else {
                     continue;
                 };
-                let (origin, radius) = g.beam_sphere();
+                // (the sphere the maps take it with, as the bins and the CPU lists)
+                let (origin, radius) = g.member_sphere();
                 if !self.beams.holding(origin, radius).any(|s| s == slot) {
                     continue;
                 }

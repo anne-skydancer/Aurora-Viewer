@@ -28,19 +28,20 @@
 //! texture sizes for the world camera only (`processTextureStats`,
 //! indra/newview/llviewertexture.cpp asserts it is not a shadow pass).
 //!
-//! Not covered, they keep the camera's level (nothing is requested for
-//! them): rigged meshes and avatars (their shadow moves with the animation
+//! Not covered, they keep the camera's level (no shadow geometry is
+//! requested for them): rigged meshes and avatars (their shadow moves with the animation
 //! every frame), flexible prims (one geometry per object), trees and grass
 //! (their own factor), HUDs.
 //!
 //! Which maps hold a caster is decided with the same sphere: the origin and
 //! half the scale diagonal (`ObjGpu::member_sphere`, `CullObject::beam` on the
-//! GPU, `l.spot` on the CPU), for the objects whose geometry lies in its unit
-//! box at every level of detail (static prims, sculpts and meshes; the box is
-//! the build's convention, a mesh's position domain is the uploader's, and
-//! nothing here invents a bound from history). The others are tested with the
-//! camera's bounds, so for them a map's membership can still follow the
-//! camera's level at a beam's edge.
+//! GPU, `l.spot` on the CPU), for the objects whose geometry lies in that
+//! sphere at every level of detail: static prims whose parameters keep them
+//! in their unit box (`prim_in_unit_box`: no shear, skew, twist, ...), and
+//! sculpts and meshes whose bounds are in the sphere (`bounds_in_sphere`;
+//! the box is the uploader's convention for them). The others (sheared
+//! prims included) are tested with the camera's bounds, so for them a map's
+//! membership can still follow the camera's level at a beam's edge.
 
 use super::{FaceDraw, GeomKey, GpuGeom, ObjGpu, lod_for};
 use aurora_render::gpu_cull::{sphere_in, view_planes};
@@ -149,6 +150,40 @@ pub fn alpha_tested(pass: super::Pass, blend_casts: bool) -> bool {
 /// The sync stores it (`ObjGpu::beam_radius`) with the origin.
 pub fn radius_of_scale(scale: Vec3) -> f32 {
     (scale.max(Vec3::splat(0.001)) * 0.5).length().max(0.05)
+}
+
+/// Whether a prim's shape stays inside its unit box whatever the level of
+/// detail: no shear, skew, twist, radius offset or extra revolution (they push
+/// the path or the corners of the profile out of the box), and no negative
+/// taper or hole size above 1 (they enlarge the ends). A shape that does not
+/// qualifies is taken by the camera's bounds, as before.
+pub fn prim_in_unit_box(v: &aurora_prim::params::VolumeParams) -> bool {
+    let p = &v.path;
+    p.shear == [0.0, 0.0]
+        && p.skew == 0.0
+        && p.twist_begin == 0.0
+        && p.twist_end == 0.0
+        && p.radius_offset == 0.0
+        && p.taper.iter().all(|&t| t >= 0.0)
+        && p.scale.iter().all(|&s| s <= 1.0)
+        && p.revolutions <= 1.0 + 1e-4
+}
+
+/// Whether a geometry's bounds (in its own space, the origin the centre of
+/// its unit box) lie in the sphere of its scale box (`radius_of_scale`), the
+/// one the projectors take it with. The uploader's convention (a mesh, a
+/// sculpt) is not enough: a mesh whose bounds leave the box is taken with the
+/// camera's bounds instead.
+pub fn bounds_in_sphere(min: Vec3, max: Vec3, scale: Vec3) -> bool {
+    let far = min.abs().max(max.abs()) * scale.max(Vec3::splat(0.001));
+    far.length() <= radius_of_scale(scale) * (1.0 + 1e-4)
+}
+
+/// The kinds of geometry the projectors may take with their own sphere
+/// (static prims, sculpts and meshes). Everything else keeps the camera's
+/// bounds: the sculpt placeholder, flexible prims, trees, grass.
+pub fn own_kind(key: GeomKey) -> bool {
+    matches!(key, GeomKey::Prim { .. } | GeomKey::Sculpt { .. } | GeomKey::Mesh { .. })
 }
 
 /// The level of detail of a geometry (None for the kinds without levels).
@@ -308,6 +343,59 @@ mod tests {
         assert_eq!(beams.texels(coarse.origin, radius, 1.0), texels);
         // (the bounds centres would have given another size: the test can fail)
         assert_ne!(beams.texels(coarse.center, radius, 1.0), texels);
+    }
+
+    #[test]
+    fn only_a_shape_that_keeps_to_its_box_has_a_beam_sphere_of_its_own() {
+        use aurora_prim::params::VolumeParams;
+        let plain = VolumeParams::default();
+        assert!(prim_in_unit_box(&plain));
+        let with = |f: &dyn Fn(&mut VolumeParams)| {
+            let mut v = VolumeParams::default();
+            f(&mut v);
+            prim_in_unit_box(&v)
+        };
+        assert!(!with(&|v| v.path.shear = [0.0, 0.3]), "shear");
+        assert!(!with(&|v| v.path.skew = 0.2), "skew");
+        assert!(!with(&|v| v.path.twist_end = 0.25), "twist");
+        assert!(!with(&|v| v.path.twist_begin = -0.25), "twist begin");
+        assert!(!with(&|v| v.path.radius_offset = 0.3), "radius offset");
+        assert!(!with(&|v| v.path.taper = [0.0, -0.5]), "negative taper");
+        assert!(!with(&|v| v.path.scale = [1.0, 1.5]), "scale above 1");
+        assert!(!with(&|v| v.path.revolutions = 2.0), "revolutions");
+        assert!(with(&|v| v.path.taper = [0.5, 0.2]), "a positive taper shrinks");
+        assert!(with(&|v| v.path.scale = [0.4, 0.5]), "a smaller hole");
+        // the kinds
+        assert!(own_kind(GeomKey::Prim { hash: 1, lod: 0 }));
+        assert!(own_kind(GeomKey::Sculpt { hash: 1, lod: 0 }));
+        assert!(own_kind(GeomKey::Mesh { id: Uuid::nil(), lod: 0 }));
+        assert!(!own_kind(GeomKey::Flexible {
+            id: Uuid::nil(),
+            hash: 1,
+            lod: 0
+        }));
+        assert!(!own_kind(GeomKey::SculptPlaceholder { hash: 1, lod: 0 }));
+        assert!(!own_kind(GeomKey::Tree { species: 0, lod: 0 }));
+        assert!(!own_kind(GeomKey::Grass { id: Uuid::nil(), hash: 1 }));
+    }
+
+    #[test]
+    fn the_beam_radius_comes_from_the_scale_alone_and_bounds_must_fit_it() {
+        let scale = Vec3::new(2.0, 3.0, 4.0);
+        assert!((radius_of_scale(scale) - 0.5 * scale.length()).abs() < 1e-6);
+        assert!(bounds_in_sphere(Vec3::splat(-0.5), Vec3::splat(0.5), scale), "the unit box");
+        assert!(
+            bounds_in_sphere(Vec3::splat(-0.45), Vec3::new(0.5, 0.45, 0.5), scale),
+            "a coarser level"
+        );
+        // a sheared box reaches x = 1.0: out of the sphere of a cube
+        let cube = Vec3::ONE;
+        assert!(
+            !bounds_in_sphere(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(1.0, 0.5, 0.5), cube),
+            "sheared"
+        );
+        // a mesh in bind-shape space, far from its box
+        assert!(!bounds_in_sphere(Vec3::new(5.0, 5.0, 5.0), Vec3::new(6.0, 6.0, 6.0), cube));
     }
 
     #[test]
