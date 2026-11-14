@@ -4693,8 +4693,11 @@ pub fn events() -> Vec<NetEvent> {
     // ordinary point light (fixed ids). The first lights the wall through
     // its image; the ground stays dark outside the frustums. `point`: the
     // projectors without their texture, as plain point lights, to compare.
-    // (`shade` is its own scenario, projector_shade.rs)
-    if let Some(mode) = std::env::var("AURORA_DEMO_PROJECTOR").ok().filter(|m| m != "shade") {
+    // (`shade` and its variants are their own scenario, projector_shade.rs)
+    if let Some(mode) = std::env::var("AURORA_DEMO_PROJECTOR")
+        .ok()
+        .filter(|m| projector_shade::Variant::parse(m).is_none())
+    {
         let floor = height(cx, cy) + 0.35;
         let wall = [0.82, 0.82, 0.82, 1.0];
         add(prim(
