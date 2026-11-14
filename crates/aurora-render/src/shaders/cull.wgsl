@@ -412,7 +412,7 @@ fn face_mask(i: u32) -> u32 {
     // camera is: a shadow does not change as the camera moves or turns.
     let beyond = d - r > frame.eye.w && !is_avatar;
     // (the rain's shelter map is no projector's: it keeps the camera's rules)
-    let shelter_map = min(frame.groups.w, 15u);
+    let shelter_map = min(frame.groups.w, SPOT_MAPS - 1u);
     let shelter_bit = select(0u, F_SPOT << shelter_map, (fl & F_SPOT_SHELTER) != 0u);
     let spot_maps = (fl & F_SHADOWS) != 0u && (fl & F_SPOT_ANY & ~shelter_bit) != 0u;
     if (beyond && !spot_maps) {
@@ -495,7 +495,7 @@ fn face_mask(i: u32) -> u32 {
         // (an attachment too, rigged or not: horns, hair, a hat; the snow
         // would settle on it at once, as deep as on the ground)
         let moves = (o.flags & (OBJ_AVATAR | OBJ_RIGGED | OBJ_PHYSICAL)) != 0u || o.avatar < n;
-        for (var k = 0u; k < 16u; k++) {
+        for (var k = 0u; k < SPOT_MAPS; k++) {
             if ((fl & (F_SPOT << k)) == 0u) {
                 continue;
             }
