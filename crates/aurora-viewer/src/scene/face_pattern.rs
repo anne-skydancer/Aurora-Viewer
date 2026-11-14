@@ -12,6 +12,7 @@
 
 use super::Scene;
 use crate::scene::textures::{TexSource, TextureStreamer};
+use crate::world::World;
 use aurora_render::Renderer;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -70,8 +71,13 @@ impl Scene {
     /// The faces showing the face-select pattern: the faces picked in
     /// Select face mode, whether or not "Show highlight" draws the halo
     /// (LLPipeline::renderHighlights, TE mode only).
-    pub fn set_face_pattern(&mut self, faces: &HashMap<usize, u64>) {
+    ///
+    /// A picked fully transparent face gets its record like a halo's, so a
+    /// change of the picks marks the object for a rebuild. The halo's pulse
+    /// (`selection_changed`) is not touched: only `set_face_selection` times it.
+    pub fn set_face_pattern(&mut self, world: &mut World, faces: &HashMap<usize, u64>) {
         if self.pattern_faces != *faces {
+            Self::rebuild_invisible_picks(world, &self.pattern_faces, faces);
             self.pattern_faces.clone_from(faces);
         }
     }

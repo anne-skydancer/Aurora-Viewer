@@ -12192,6 +12192,19 @@ impl Backend {
             calls.set(calls.get() + 1);
         }
 
+        // The face-select pattern is drawn whether or not "Show highlight"
+        // gives the halo any face: the Legacy Viewer's renderHighlights calls
+        // renderSelectedFaces without reading RenderHighlightSelections. It
+        // needs only its own list and the depth, and goes before the halo.
+        // It carries no timestamp: the frame's last one is written by the
+        // pass before it, or by the halo's when that follows.
+        if rg.select_pattern.1 > 0 {
+            let mut pass = crate::selection::begin_pattern(&mut encoder, scene_target, post_depth);
+            bind_mesh(&mut pass, &self.groups.b);
+            draw(&mut pass, &self.pipelines.selection_pattern, rg.select_pattern);
+            drop(pass);
+            calls.set(calls.get() + 1);
+        }
         if rg.select_faces.1 > 0
             && let Some(selection) = &self.selection
         {
@@ -12199,13 +12212,6 @@ impl Backend {
             bind_mesh(&mut pass, &self.groups.b);
             draw(&mut pass, &self.pipelines.selection_mask, rg.select_faces);
             drop(pass);
-            if rg.select_pattern.1 > 0 {
-                let mut pass = crate::selection::begin_pattern(&mut encoder, scene_target, post_depth);
-                bind_mesh(&mut pass, &self.groups.b);
-                draw(&mut pass, &self.pipelines.selection_pattern, rg.select_pattern);
-                drop(pass);
-                calls.set(calls.get() + 1);
-            }
             let timestamps = match (&self.timer, timer_slot) {
                 (Some(t), Some(_)) if !draw_huds && !draws_part => Some(wgpu::RenderPassTimestampWrites {
                     query_set: &t.query_set,
@@ -12510,6 +12516,19 @@ impl Backend {
             draw(&mut pass, &self.pipelines.hud_debug_red, hud_debug_red_range);
             draw(&mut pass, &self.pipelines.hud_debug_blue, hud_debug_blue_range);
         }
+        // the HUD faces' pattern, whatever "Show highlight" says (above); only when
+        // the HUD pass ran, which clears the HUD depth. With the halo off this pass
+        // carries no timestamp, so its time is not in the GPU total.
+        if draw_huds
+            && hud_select_pattern_range.1 > 0
+            && let Some((_, _, depth)) = &self.hud_depth
+        {
+            let mut pass = crate::selection::begin_pattern(&mut encoder, &surface_view, depth);
+            bind_mesh(&mut pass, &self.groups.refl[5]);
+            draw(&mut pass, &self.pipelines.selection_pattern, hud_select_pattern_range);
+            drop(pass);
+            calls.set(calls.get() + 1);
+        }
         if hud_select_faces_range.1 > 0
             && let (Some(selection), Some((_, _, depth))) = (&self.hud_selection, &self.hud_depth)
         {
@@ -12517,13 +12536,6 @@ impl Backend {
             bind_mesh(&mut pass, &self.groups.refl[5]);
             draw(&mut pass, &self.pipelines.selection_mask, hud_select_faces_range);
             drop(pass);
-            if hud_select_pattern_range.1 > 0 {
-                let mut pass = crate::selection::begin_pattern(&mut encoder, &surface_view, depth);
-                bind_mesh(&mut pass, &self.groups.refl[5]);
-                draw(&mut pass, &self.pipelines.selection_pattern, hud_select_pattern_range);
-                drop(pass);
-                calls.set(calls.get() + 1);
-            }
             let timestamps = match (&self.timer, timer_slot) {
                 (Some(t), Some(_)) => Some(wgpu::RenderPassTimestampWrites {
                     query_set: &t.query_set,
