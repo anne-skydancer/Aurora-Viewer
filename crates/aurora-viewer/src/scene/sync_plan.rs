@@ -772,7 +772,13 @@ mod tests {
         let world_model =
             Mat4::from_scale_rotation_translation(Vec3::new(2.0, 3.0, 4.0), Quat::from_rotation_z(0.7), Vec3::new(10.0, 20.0, 30.0));
         // a coarse and a fine level of the same shape: other bounds
-        let coarse = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.45), Vec3::new(0.5, 0.45, 0.5), Vec3::ZERO);
+        let coarse = BoxPoints::of(
+            &world_model,
+            &world_model,
+            Vec3::splat(-0.45),
+            Vec3::new(0.5, 0.45, 0.5),
+            Vec3::ZERO,
+        );
         let fine = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.5), Vec3::splat(0.5), Vec3::ZERO);
         assert!(coarse.center.distance(fine.center) > 0.1, "the centres differ with the level");
         assert!(coarse.origin.distance(fine.origin) < 1e-6);
@@ -783,7 +789,8 @@ mod tests {
     #[test]
     fn a_skinned_meshs_origin_is_its_position_not_the_bind_shape_offset() {
         use glam::Quat;
-        let place = Mat4::from_scale_rotation_translation(Vec3::new(2.0, 3.0, 4.0), Quat::from_rotation_z(0.7), Vec3::new(10.0, 20.0, 30.0));
+        let place =
+            Mat4::from_scale_rotation_translation(Vec3::new(2.0, 3.0, 4.0), Quat::from_rotation_z(0.7), Vec3::new(10.0, 20.0, 30.0));
         let bind_shape = Mat4::from_rotation_translation(Quat::from_rotation_x(0.4), Vec3::new(0.0, 0.0, 1.0));
         let unbind = bind_shape.inverse();
         let world_model = place * unbind;
@@ -792,7 +799,10 @@ mod tests {
         assert!(p.origin.distance(Vec3::new(10.0, 20.0, 30.0)) < 1e-4, "{:?}", p.origin);
         assert!(p.local_origin.distance(p.origin) < 1e-6);
         let naive = world_model.transform_point3(Vec3::ZERO);
-        assert!(naive.distance(Vec3::new(10.0, 20.0, 30.0)) > 0.5, "the test is sensitive to the bug");
+        assert!(
+            naive.distance(Vec3::new(10.0, 20.0, 30.0)) > 0.5,
+            "the test is sensitive to the bug"
+        );
     }
 
     fn volume(path: u8, profile: u8, sculpt: Option<u8>) -> VolumeParams {
