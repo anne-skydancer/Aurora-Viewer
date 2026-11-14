@@ -65,8 +65,9 @@ fn resolve_pixel(px: vec2<i32>) -> vec4<f32> {
 }
 
 // Temporal: the last frame's resolved colour where this pixel's nearest
-// transparent surface was, through the camera's motion only (the hair's own
-// sway is not reprojected), clamped to the 3 x 3 neighbourhood of this frame
+// transparent surface was, through the camera's motion only (the motion of
+// the objects and avatars themselves is not reprojected: an animated avatar
+// carries its worn hair with it), clamped to the 3 x 3 neighbourhood of this frame
 // as TAA does, then blended. Ghosts and smears where the clamp does not
 // catch a change.
 fn reprojected(px: vec2<i32>, cur: vec4<f32>) -> vec4<f32> {

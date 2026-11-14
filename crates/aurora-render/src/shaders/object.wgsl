@@ -1910,10 +1910,13 @@ struct StParams {
     frame_seed: u32,
     _pad: u32,
 };
-// masks[R * ST_SEEDS + seed]: a random R-subset of the S sample bits
+// masks[R * ST_SEEDS + seed]: a random R-subset of the S sample bits; after
+// the (S + 1) * ST_SEEDS subsets, the 64 x 64 tile of ranks (blue noise, a
+// permutation of 0..4095) that dithers R
 @group(3) @binding(30) var<storage, read> st_masks: array<u32>;
 @group(3) @binding(31) var<uniform> st: StParams;
 const ST_SEEDS: u32 = 2048u;
+const ST_TILE: u32 = 64u;
 
 fn st_hash(v: u32) -> u32 {
     var x = v * 747796405u + 2891336453u;
@@ -1921,18 +1924,21 @@ fn st_hash(v: u32) -> u32 {
     return (x >> 22u) ^ x;
 }
 
-// The whole S-bit mask of a fragment of alpha `a`.
+// The whole S-bit mask of a fragment of alpha `a`: R = floor(a S + xi) of the
+// S samples, with xi in 24-bit fixed point, so that its mean over a tile is
+// exactly 1/2 and E[R] = a S.
 fn st_mask(px: vec2<u32>, tie: u32, prim: u32, a: f32) -> u32 {
-    // the primitive's own seed (and the frame's when temporal) rotates the
-    // pixel's white-noise value that dithers R
+    // the primitive's own seed (and the frame's when temporal)
     var seed = st_hash(st_hash(tie * 0x9e3779b9u + 0x7f4a7c15u) ^ st_hash(prim + 0x632be5abu));
     if ((st.flags & 1u) != 0u) {
         seed = st_hash(seed + st.frame_seed);
     }
-    let h = st_hash(px.x | (px.y << 16u));
-    let pv = vec2<f32>(f32(h >> 8u), f32(st_hash(h) >> 8u)) / 16777216.0;
-    let rot = vec2<f32>(f32(seed >> 8u), f32(st_hash(seed) >> 8u)) / 16777216.0;
-    let dither = fract(pv + rot).x;
+    // xi: the pixel's stratum in the blue-noise tile (paper section 3.1, R
+    // dithered across a tile), rotated by the primitive's own offset
+    // (Cranley-Patterson) so that layers stay decorrelated
+    let rank = st_masks[(st.samples + 1u) * ST_SEEDS + (px.y & (ST_TILE - 1u)) * ST_TILE + (px.x & (ST_TILE - 1u))];
+    let xi24 = ((2u * rank + 1u) * 2048u + (seed >> 8u)) & 0xffffffu;
+    let dither = f32(xi24) / 16777216.0;
     // the subset is hashed from the layer's seed and the pixel, whatever the
     // pixel values: two layers whose rotations met on one table index would
     // otherwise share a subset over their whole overlap and hide the back one

@@ -12019,7 +12019,7 @@ What the inventory must show with these scenarios:
   depth-based stochastic transparency (Enderton et al., "Stochastic
   Transparency", I3D 2010, section 3.4): the total alpha of every sample,
   then each fragment covering a stratified random subset of its samples of
-  size alpha x S into a copy of the opaque depth (GreaterEqual for the
+  size alpha x S (R = floor(alpha S + xi), xi dithered by a blue-noise tile) into a copy of the opaque depth (GreaterEqual for the
   faces of non-rigged meshes, as the sorted order, so that a decal at the
   depth of its surface stays; Greater for rigged ones), then the
   accumulation of the fragments at or in front of that depth, composited
