@@ -22,6 +22,7 @@ mod inventory_updates;
 mod inventory_upload;
 mod object_actions;
 mod object_cache;
+mod object_watch;
 mod render_info_net;
 mod scripts;
 mod sim_requests;
@@ -379,6 +380,8 @@ struct Session<'a> {
     inventory_callbacks: HashMap<u32, (Instant, bool)>,
     inventory_copies: inventory_copies::Pending,
     attach_queue: attach_queue::AttachQueue,
+    /// Objects asked for and rejected blocks (#1858, diagnostics only).
+    object_watch: object_watch::ObjectWatch,
     inventory_merchant_pending: bool,
     next_inventory_callback: u32,
 }
@@ -571,6 +574,7 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
         inventory_callbacks: HashMap::new(),
         inventory_copies: inventory_copies::Pending::default(),
         attach_queue: Default::default(),
+        object_watch: Default::default(),
         notecard_copy_tx,
         inventory_move_tx,
         inventory_udp_tx,
@@ -854,6 +858,30 @@ impl Session<'_> {
         t.throttle.gen_counter = 0;
         t.throttle.throttles = self.throttle.bits_per_second().iter().flat_map(|f| f.to_le_bytes()).collect();
         self.send(addr, &t, true);
+    }
+
+    /// Objects asked for (cache misses) and not received after
+    /// `object_watch::LATE`: logged, once each (#1858).
+    fn report_late_objects(&mut self, now: Instant) {
+        for line in self.object_watch.attachment_report(now) {
+            log::warn!("{line}");
+        }
+        let Some(late) = self.object_watch.report(now) else {
+            return;
+        };
+        let (asked, total_late) = self.object_watch.totals();
+        for l in late {
+            let region = self.sims.get(&l.addr).map_or(0, |sim| sim.handle);
+            log::warn!(
+                "{} objects asked for (RequestMultipleObjects) not received after {} s from region {} ({}), local ids {:?}{}; {asked} asked and {total_late} not received since the start",
+                l.count,
+                object_watch::LATE.as_secs(),
+                transition::grid(region),
+                l.addr,
+                l.sample,
+                if l.count > l.sample.len() { " …" } else { "" }
+            );
+        }
     }
 
     /// The bandwidth asked follows the setting, and the link every five
@@ -1341,6 +1369,7 @@ impl Session<'_> {
 
     fn remove_sim(&mut self, addr: SocketAddr) {
         self.object_cache.forget(addr);
+        self.object_watch.forget(addr);
         if let Some(sim) = self.sims.remove(&addr) {
             transition::link(|| {
                 format!(
@@ -1440,6 +1469,8 @@ impl Session<'_> {
         self.send_queued_attachment(now);
         self.publish_motion();
         self.object_cache.save_when_due(now);
+        self.update_throttle(now);
+        self.report_late_objects(now);
         let stats = self.sh.stats.clone();
         // Deferred CompleteAgentMovement once UseCircuitCode is acked. At
         // login it waits for the ack itself, as llstartup.cpp STATE_WORLD_WAIT
@@ -3943,6 +3974,7 @@ impl Session<'_> {
 
     fn request_objects(&mut self, addr: SocketAddr, ids: &[u32]) {
         crate::probe::objects(crate::probe::ObjectKind::Requested, ids.len());
+        self.object_watch.asked(addr, ids, Instant::now());
         for chunk in ids.chunks(255) {
             let mut m = RequestMultipleObjects::default();
             m.agent_data.agent_id = self.agent_id();
@@ -4326,8 +4358,25 @@ impl Session<'_> {
             for b in &m.object_data {
                 match objects::parse_full(b) {
                     Some(u) => objects.push(u),
-                    None => self.note_rejected_full(from, b),
+                    None => {
+                        if self.object_watch.rejected() {
+                            log::warn!(
+                                "object update block rejected (ObjectUpdate): {} bytes of object data, object {}, local id {}, pcode {}, parent {} ({} rejected so far)",
+                                b.object_data.len(),
+                                b.full_id,
+                                b.id,
+                                b.p_code,
+                                b.parent_id,
+                                self.object_watch.rejected_count()
+                            );
+                        }
+                        self.note_rejected_full(from, b);
+                    }
                 }
+            }
+            self.object_watch.received(from, objects.iter().map(|o| o.local_id));
+            for o in &objects {
+                self.object_watch.object(o.full_id, o.local_id, o.parent_id, o.pcode);
             }
             self.attach_queue
                 .observe(objects.iter().map(|o| o.name_values.as_str()), Instant::now());
@@ -4351,17 +4400,27 @@ impl Session<'_> {
                 });
             }
             let mut cache = self.object_cache.get_mut(from);
-            let objects: Vec<_> = m
-                .object_data
-                .iter()
-                .filter_map(|b| {
-                    let u = objects::parse_compressed(&b.data, b.update_flags)?;
-                    if let Some(c) = cache.as_mut() {
-                        c.put(u.local_id, u.crc, b.update_flags, &b.data);
+            let mut objects = Vec::with_capacity(m.object_data.len());
+            for b in &m.object_data {
+                match objects::parse_compressed(&b.data, b.update_flags) {
+                    Some(u) => {
+                        if let Some(c) = cache.as_mut() {
+                            c.put(u.local_id, u.crc, b.update_flags, &b.data);
+                        }
+                        objects.push(u);
                     }
-                    Some(u)
-                })
-                .collect();
+                    None if self.object_watch.rejected() => log::warn!(
+                        "object update block rejected (ObjectUpdateCompressed): {} ({} rejected so far)",
+                        object_watch::describe_compressed(&b.data, b.update_flags),
+                        self.object_watch.rejected_count()
+                    ),
+                    None => {}
+                }
+            }
+            self.object_watch.received(from, objects.iter().map(|o| o.local_id));
+            for o in &objects {
+                self.object_watch.object(o.full_id, o.local_id, o.parent_id, o.pcode);
+            }
             self.attach_queue
                 .observe(objects.iter().map(|o| o.name_values.as_str()), Instant::now());
             self.sh.stats.objects_full.fetch_add(objects.len() as u64, Ordering::Relaxed);
@@ -4416,6 +4475,9 @@ impl Session<'_> {
                     }
                     None => misses.push(o.id),
                 }
+            }
+            for o in &hits {
+                self.object_watch.object(o.full_id, o.local_id, o.parent_id, o.pcode);
             }
             self.sh.stats.object_cache_hits.fetch_add(hits.len() as u64, Ordering::Relaxed);
             self.sh.stats.object_cache_misses.fetch_add(misses.len() as u64, Ordering::Relaxed);
@@ -4486,6 +4548,7 @@ impl Session<'_> {
         } else if id == KillObject::ID {
             let m: KillObject = pkt.decode()?;
             crate::probe::objects(crate::probe::ObjectKind::Killed, m.object_data.len());
+            self.object_watch.killed(m.object_data.iter().map(|o| o.id));
             emit(
                 self.sh,
                 NetEvent::ObjectsKilled {
@@ -4959,6 +5022,11 @@ impl Session<'_> {
             );
         } else if id == msgs::AvatarAppearance::ID {
             let m: msgs::AvatarAppearance = pkt.decode()?;
+            // the worn objects it lists, followed for #1858 (object_watch)
+            let mut worn: Vec<_> = m.attachment_block.iter().filter(|a| !a.id.is_nil()).map(|a| a.id).collect();
+            worn.sort_unstable();
+            worn.dedup();
+            self.object_watch.appearance(m.sender.id, worn, Instant::now());
             emit(
                 self.sh,
                 NetEvent::Appearance(crate::types::AvatarAppearance {
@@ -6858,6 +6926,7 @@ mod event_queue_tests {
             inventory_callbacks: HashMap::new(),
             inventory_copies: inventory_copies::Pending::default(),
             attach_queue: Default::default(),
+            object_watch: Default::default(),
             inventory_merchant_pending: false,
             next_inventory_callback: 0,
         }
@@ -7213,6 +7282,7 @@ mod script_dialog_tests {
             inventory_callbacks: HashMap::new(),
             inventory_copies: super::inventory_copies::Pending::default(),
             attach_queue: Default::default(),
+            object_watch: Default::default(),
             inventory_merchant_pending: false,
             next_inventory_callback: 0,
         }

@@ -1380,7 +1380,7 @@ Honoured only in a demo (`AURORA_DEMO`) or a timed run (`AURORA_CAPTURE`,
   steady Ctrl+Alt orbit of `px` mouse pixels a frame (0.5 by default) until
   frame 1200: the view turns all the time, for the shadows that depended on
   where the camera looked (`AURORA_SHADOW_ANCHOR`, `AURORA_DEMO_PROJECTOR`);
-  until frame 1200; `orbit,x,y[,px]`: Alt+click at (x, y) at frame 600,
+  `orbit,x,y[,px]`: Alt+click at (x, y) at frame 600,
   then an orbit of `px` mouse pixels per frame (0.5 by default) that never
   stops, its pitch swinging slowly, for the stability runs of several
   minutes with a moving camera; press on our own name plate then drag (steering);
