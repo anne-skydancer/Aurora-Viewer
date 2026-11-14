@@ -437,8 +437,8 @@ pub struct ObjGpu {
     pub center: Vec3,
     /// The origin of the geometry's space (the centre of its unit box),
     /// placed like `center`; unlike it, no level of detail moves it, so the
-    /// projectors' shadow level reads it (beam_detail.rs). A rigged mesh,
-    /// an avatar or a HUD: equal to `center`.
+    /// projectors' shadow level reads it (beam_detail.rs). A rigged mesh
+    /// or an avatar: equal to `center`.
     pub origin: Vec3,
     pub radius: f32,
     pub tex_generation: u64,
@@ -4045,7 +4045,7 @@ impl Scene {
     }
 
     /// What the shadow levels and the texture floor hold, for the trace and
-    /// the profile (decision D6: no cap, a statistic to measure on the grid):
+    /// the profile (no cap, a statistic to measure on the grid):
     /// the geometry only the projectors' maps reference, and what the texture
     /// floor holds more than the camera would (`TextureStreamer::beam_floor`).
     fn note_beam_costs(&mut self) {
@@ -4104,7 +4104,13 @@ impl Scene {
                 }
                 n += 1;
                 feed(o.full_id.as_bytes());
-                feed(&[g.shadow_geom.or(g.geom).and_then(beam_detail::level_of).unwrap_or(255)]);
+                // (a mesh by the block it draws: the camera's key may ask for
+                // a level its asset lacks)
+                let level = g.shadow_geom.or(g.geom).and_then(|k| match k {
+                    GeomKey::Mesh { id, lod } => self.meshes.resolved_lod(&id, lod).or(Some(lod)),
+                    k => beam_detail::level_of(k),
+                });
+                feed(&[level.unwrap_or(255)]);
                 for f in g.faces.iter().filter(|f| beam_detail::alpha_tested(f.pass, blend_casts)) {
                     feed(&[self.textures.decoded_level(&f.tex_id).unwrap_or(255)]);
                 }
@@ -4157,9 +4163,20 @@ impl Scene {
             // (a mesh without that level draws another one: compared and
             // requested by the level it resolves to)
             match beam_detail::resolve_level(cam, shadow, |id, lod| self.meshes.resolved_lod(id, lod)) {
-                beam_detail::Resolved::Camera => {}
+                // The camera draws the block the projectors want now, but
+                // would stop doing so when it moves: hold that geometry (the
+                // one already held when it is the same block) so the map
+                // never waits for a build the camera's move asked for. It
+                // is the camera's own geometry, shared: no memory of its own.
+                beam_detail::Resolved::Camera => {
+                    desired = Some(match held {
+                        Some(h) if self.same_block(h, cam) => h,
+                        _ => cam,
+                    });
+                }
                 beam_detail::Resolved::Key(k) => desired = Some(k),
-                // (the header is not known: the camera's range stands)
+                // (the header is not known: the camera's range, or the
+                // geometry held, stands)
                 beam_detail::Resolved::Wait => return,
             }
         }
@@ -4190,6 +4207,17 @@ impl Scene {
             self.geom_unref(old);
         }
         self.write_shadow_ranges(renderer, idx);
+    }
+
+    /// Both keys draw one block: equal, or two levels of a mesh that resolve
+    /// to the same block of its asset.
+    fn same_block(&self, a: GeomKey, b: GeomKey) -> bool {
+        match (a, b) {
+            (GeomKey::Mesh { id, lod: x }, GeomKey::Mesh { id: other, lod: y }) if id == other => {
+                matches!((self.meshes.resolved_lod(&id, x), self.meshes.resolved_lod(&id, y)), (Some(p), Some(q)) if p == q)
+            }
+            _ => a == b,
+        }
     }
 
     /// Write the shadow ranges of the faces of object `idx` from its shadow

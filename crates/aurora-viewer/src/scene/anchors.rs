@@ -935,7 +935,9 @@ impl Scene {
                     let centre = Mat4::from_cols_array_2d(m).transform_point3(g.local_center);
                     let wide = g.posed.map(|_| (run.at, run.extent));
                     kept_centres.0 += 1;
+                    let origin = Mat4::from_cols_array_2d(m).transform_point3(g.local_origin);
                     if centre.distance(g.center) > 1e-4
+                        || origin.distance(g.origin) > 1e-4
                         || wide.is_some_and(|w| g.wide.is_none_or(|g| g.0.distance(w.0) > 1e-4 || g.1 != w.1))
                     {
                         kept_centres.1 += 1;

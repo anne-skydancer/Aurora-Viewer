@@ -80,28 +80,28 @@ impl Beams {
         }));
     }
 
-    /// The shadow level of a caster (sphere `center`, `radius`): the largest
+    /// The shadow level of a caster (sphere `origin`, `radius`): the largest
     /// level over the maps whose frustum holds it, None when none does. It
     /// reads the projectors and the object, never the camera.
-    pub fn level(&self, center: Vec3, radius: f32, lod_factor: f32) -> Option<u8> {
+    pub fn level(&self, origin: Vec3, radius: f32, lod_factor: f32) -> Option<u8> {
         self.beams
             .iter()
-            .filter(|b| sphere_in(&b.planes, center, radius))
-            .map(|b| lod_for(radius, center.distance(b.apex), lod_factor, b.fov))
+            .filter(|b| sphere_in(&b.planes, origin, radius))
+            .map(|b| lod_for(radius, origin.distance(b.apex), lod_factor, b.fov))
             .max()
     }
 
-    /// Texels a face of an object (sphere `center`, `radius`) with `repeats`
+    /// Texels a face of an object (sphere `origin`, `radius`) with `repeats`
     /// covers in the largest map holding it: the diameter over the width of
     /// the map at its distance, times the map's texels, lowered by the
     /// repeats like any texture size (`texture_importance::per_repeats`).
     /// None when no map holds it. Camera-free.
-    pub fn texels(&self, center: Vec3, radius: f32, repeats: f32) -> Option<f32> {
+    pub fn texels(&self, origin: Vec3, radius: f32, repeats: f32) -> Option<f32> {
         self.beams
             .iter()
-            .filter(|b| sphere_in(&b.planes, center, radius))
+            .filter(|b| sphere_in(&b.planes, origin, radius))
             .map(|b| {
-                let d = center.distance(b.apex).max(b.near).max(0.01);
+                let d = origin.distance(b.apex).max(b.near).max(0.01);
                 let px = radius * self.map_px / (d * b.half_tan.max(1e-3));
                 super::texture_importance::per_repeats(px, repeats)
             })
@@ -109,10 +109,10 @@ impl Beams {
     }
 
     /// The slots of the maps holding the sphere, in the order of the maps.
-    pub fn holding(&self, center: Vec3, radius: f32) -> impl Iterator<Item = usize> + '_ {
+    pub fn holding(&self, origin: Vec3, radius: f32) -> impl Iterator<Item = usize> + '_ {
         self.beams
             .iter()
-            .filter(move |b| sphere_in(&b.planes, center, radius))
+            .filter(move |b| sphere_in(&b.planes, origin, radius))
             .map(|b| b.slot)
     }
 
@@ -291,8 +291,8 @@ mod tests {
         let beams = beams(&[projector(Vec3::new(0.0, 0.0, 3.0))]);
         let world_model = Mat4::from_scale_rotation_translation(Vec3::splat(2.0), Quat::IDENTITY, Vec3::new(0.0, 0.0, -2.0));
         // two levels of one shape: other bounds, so other centres
-        let coarse = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.3), Vec3::splat(0.5));
-        let fine = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.5), Vec3::splat(0.5));
+        let coarse = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.3), Vec3::splat(0.5), Vec3::ZERO);
+        let fine = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.5), Vec3::splat(0.5), Vec3::ZERO);
         assert!(coarse.center.distance(fine.center) > 0.1);
         let radius = 1.7;
         let level = beams.level(fine.origin, radius, 1.0);
@@ -301,6 +301,8 @@ mod tests {
         let texels = beams.texels(fine.origin, radius, 1.0);
         assert!(texels.is_some());
         assert_eq!(beams.texels(coarse.origin, radius, 1.0), texels);
+        // (the bounds centres would have given another size: the test can fail)
+        assert_ne!(beams.texels(coarse.center, radius, 1.0), texels);
     }
 
     #[test]
@@ -440,19 +442,17 @@ mod tests {
     fn a_missing_mesh_level_resolves_like_the_build_does() {
         let id = Uuid::from_u128(5);
         let mesh = |lod| GeomKey::Mesh { id, lod };
-        // an asset with levels 1 and 3 only (`MeshHeader::actual_lod`)
-        let has = [false, true, false, true];
-        let resolve = |_: &Uuid, lod: u8| {
-            let lod = lod.min(3) as usize;
-            if has[lod] {
-                return Some(lod as u8);
-            }
-            (0..lod)
-                .rev()
-                .find(|&i| has[i])
-                .or_else(|| (lod + 1..4).find(|&i| has[i]))
-                .map(|i| i as u8)
+        // an asset with levels 1 and 3 only, resolved by the header itself
+        // (`MeshHeader::actual_lod`, what the build and `lod_block` use)
+        let header = aurora_assets::MeshHeader {
+            header_size: 10,
+            lods: [None, Some((10, 20)), None, Some((30, 40))],
+            skin: None,
+            physics_convex: None,
+            physics_mesh: None,
+            version: 1,
         };
+        let resolve = |_: &Uuid, lod: u8| header.actual_lod(lod as usize).map(|a| a as u8);
         // 2 draws level 1's block, so does 0: shadow 0 against camera 2 is the camera's geometry
         assert_eq!(resolve_level(mesh(2), mesh(0), resolve), Resolved::Camera);
         assert_eq!(resolve_level(mesh(1), mesh(2), resolve), Resolved::Camera);
