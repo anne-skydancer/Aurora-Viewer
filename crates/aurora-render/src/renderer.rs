@@ -4373,6 +4373,7 @@ impl Backend {
             constants: &[],
             polygon_line: false,
             unclipped_depth: false,
+            range: None,
         };
         // the stochastic depth and the accumulation at the passes' own
         // count (oit_stochastic.rs `pass_samples`), the total alpha at the
