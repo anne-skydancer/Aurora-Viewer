@@ -7888,7 +7888,9 @@ mod tests {
 
     /// With "Show highlight" off the halo's faces are empty and the picked
     /// faces alone are set (`face_picks`): the object stays visited every
-    /// frame, so the pattern does not blink with the usage frames.
+    /// frame, so the pattern does not blink with the usage frames. This tests
+    /// the `has_picks` helper the two visit predicates call, not the predicates
+    /// themselves (a capture covers those).
     #[test]
     fn pattern_picks_alone_keep_an_object_visited() {
         let lib = Arc::new(AvatarLibrary::load());
