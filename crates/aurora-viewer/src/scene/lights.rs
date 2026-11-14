@@ -46,6 +46,9 @@ pub struct LightView {
     /// Projectors cast shadows (the setting, with the sun's shadows on).
     pub projector_shadows: bool,
     pub projector_shadow_limit: u8,
+    /// Texels across one projector's shadow map (a tile of the atlas, half
+    /// the sun's resolution: `projector_shadows`).
+    pub map_px: u32,
     /// Keep lights worn by other residents (Preferences › Graphics).
     pub others_attached_lights: bool,
     /// Lights the frame keeps at most (Preferences › Graphics, "Maximum
@@ -272,6 +275,7 @@ impl Scene {
         // the beams the casters' shadow detail follows (beam_detail.rs): the
         // projectors holding a map, as assigned, whatever the camera does
         self.beams.set(
+            view.map_px,
             shadows
                 .iter()
                 .flatten()
@@ -377,6 +381,7 @@ mod tests {
             dt: 0.016,
             projector_shadows: true,
             projector_shadow_limit: 2,
+            map_px: 1024,
             others_attached_lights: true,
             max_lights: MAX_LIGHTS,
         }

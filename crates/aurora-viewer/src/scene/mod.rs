@@ -4019,6 +4019,14 @@ impl Scene {
         let Some(g) = self.gpu.get(idx) else {
             return;
         };
+        // the texture floor: what the maps cover of its alpha-tested faces
+        if beam_detail::eligible(g) {
+            for f in g.faces.iter().filter(|f| beam_detail::alpha_tested(f.pass) && !f.tex_id.is_nil()) {
+                if let Some(px) = self.beams.texels(g.center, g.radius, f.repeats) {
+                    self.textures.note_usage_beam(&f.tex_id, px);
+                }
+            }
+        }
         let held = g.shadow_geom;
         let camera = g.geom.filter(|_| beam_detail::eligible(g) && !g.faces.is_empty());
         let desired = camera

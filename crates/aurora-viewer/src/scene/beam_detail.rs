@@ -19,6 +19,15 @@
 //! indra/newview/llvovolume.cpp; its spot shadow passes draw whatever level
 //! the world camera left).
 //!
+//! The texture floor: an alpha-tested caster's base texture also decides the
+//! shape of its shadow (a pierced shade), so the texels the face covers in
+//! the map (`Beams::texels`) are noted as a minimum size of that texture
+//! (`TextureStreamer::note_usage_beam`), from the beams alone: a shade only
+//! its shadow shows still loads, and does not blur as the camera leaves.
+//! Memory pressure lowers it like an in-view size. The Legacy Viewer notes
+//! texture sizes for the world camera only (`processTextureStats`,
+//! indra/newview/llviewertexture.cpp asserts it is not a shadow pass).
+//!
 //! Not covered, they keep the camera's level (nothing is requested for
 //! them): rigged meshes and avatars (their shadow moves with the animation
 //! every frame), flexible prims (one geometry per object), trees and grass
@@ -37,6 +46,9 @@ struct Beam {
     apex: Vec3,
     /// Field of view the level is computed with (radians).
     fov: f32,
+    /// `Projector::half_tan` and `Projector::near`.
+    half_tan: f32,
+    near: f32,
 }
 
 /// The projectors holding a shadow map, as of the last frame's assignment
@@ -44,13 +56,19 @@ struct Beam {
 #[derive(Default)]
 pub struct Beams {
     beams: Vec<Beam>,
+    /// Texels across one map (its tile of the atlas).
+    map_px: f32,
 }
 
 impl Beams {
-    /// Replace the beams with those of the projectors that hold a map.
-    pub fn set(&mut self, projectors: impl IntoIterator<Item = Projector>) {
+    /// Replace the beams with those of the projectors that hold a map, the
+    /// maps being `map_px` texels across.
+    pub fn set(&mut self, map_px: u32, projectors: impl IntoIterator<Item = Projector>) {
         self.beams.clear();
+        self.map_px = map_px as f32;
         self.beams.extend(projectors.into_iter().map(|p| Beam {
+            half_tan: p.half_tan,
+            near: p.near,
             planes: view_planes(p.shadow_matrix).map(|v| v.to_array()),
             apex: p.origin,
             // (the narrower side, where the map has the most texels per
@@ -69,6 +87,29 @@ impl Beams {
             .map(|b| lod_for(radius, center.distance(b.apex), lod_factor, b.fov))
             .max()
     }
+
+    /// Texels a face of an object (sphere `center`, `radius`) with `repeats`
+    /// covers in the largest map holding it: the diameter over the width of
+    /// the map at its distance, times the map's texels, lowered by the
+    /// repeats like any texture size (`texture_importance::per_repeats`).
+    /// None when no map holds it. Camera-free.
+    pub fn texels(&self, center: Vec3, radius: f32, repeats: f32) -> Option<f32> {
+        self.beams
+            .iter()
+            .filter(|b| sphere_in(&b.planes, center, radius))
+            .map(|b| {
+                let d = center.distance(b.apex).max(b.near).max(0.01);
+                let px = radius * self.map_px / (d * b.half_tan.max(1e-3));
+                super::texture_importance::per_repeats(px, repeats)
+            })
+            .fold(None, |m: Option<f32>, v| Some(m.map_or(v, |m| m.max(v))))
+    }
+}
+
+/// A face whose shadow is alpha-tested: its base texture shapes the shadow.
+pub fn alpha_tested(pass: super::Pass) -> bool {
+    use super::Pass;
+    matches!(pass, Pass::Mask | Pass::MaskTwoSided | Pass::Blend)
 }
 
 /// An object whose shadow level is its own (see the module's list of what
@@ -168,7 +209,7 @@ mod tests {
 
     fn beams(ps: &[Projector]) -> Beams {
         let mut b = Beams::default();
-        b.set(ps.iter().copied());
+        b.set(1024, ps.iter().copied());
         b
     }
 
@@ -210,6 +251,44 @@ mod tests {
         assert_eq!(beams(&[far, beside]).level(center, radius, 2.0), b);
         assert_eq!(beams(&[beside]).level(center, radius, 2.0), None);
         assert_eq!(Beams::default().level(center, radius, 2.0), None);
+    }
+
+    #[test]
+    fn the_texture_floor_follows_the_beam_and_never_the_camera() {
+        let b = beams(&[projector(Vec3::new(0.0, 0.0, 6.0))]);
+        let (center, radius) = (Vec3::new(0.3, 0.2, 2.0), 0.43);
+        let floor = b.texels(center, radius, 1.0).expect("in the beam");
+        assert!(floor > 50.0, "{floor}");
+        let mut seed = 11;
+        for _ in 0..500 {
+            // the camera is no input: whatever it does, the same floor
+            let _eye = Vec3::new(rng(&mut seed) - 0.5, rng(&mut seed) - 0.5, rng(&mut seed)) * 300.0;
+            assert_eq!(b.texels(center, radius, 1.0), Some(floor));
+        }
+        // nearer the apex, more texels; repeats lower it; outside, none
+        let nearer = b.texels(Vec3::new(0.3, 0.2, 4.0), radius, 1.0).unwrap();
+        assert!(nearer > floor);
+        assert!(b.texels(center, radius, 4.0).unwrap() < floor);
+        assert_eq!(b.texels(Vec3::new(90.0, 0.0, 2.0), radius, 1.0), None);
+        assert_eq!(Beams::default().texels(center, radius, 1.0), None);
+        // the largest over the maps holding it
+        let far = projector(Vec3::new(0.0, 0.0, 18.0));
+        let near = projector(Vec3::new(0.0, 0.0, 3.0));
+        assert_eq!(
+            beams(&[far, near]).texels(center, radius, 1.0),
+            beams(&[near]).texels(center, radius, 1.0)
+        );
+    }
+
+    #[test]
+    fn only_alpha_tested_faces_get_the_floor() {
+        use super::super::Pass;
+        for p in [Pass::Mask, Pass::MaskTwoSided, Pass::Blend] {
+            assert!(alpha_tested(p), "{p:?}");
+        }
+        for p in [Pass::Opaque, Pass::OpaqueTwoSided, Pass::Hidden] {
+            assert!(!alpha_tested(p), "{p:?}");
+        }
     }
 
     #[test]

@@ -11639,6 +11639,7 @@ impl App {
                     self.settings.projector_shadow_limit,
                     gfx.renderer.max_texture_dimension(),
                 ),
+                map_px: self.settings.shadow_params().0.clamp(512, 8192) / 2,
                 others_attached_lights: self.settings.others_attached_lights,
                 max_lights: self.settings.local_light_count as usize,
             };
