@@ -4039,12 +4039,13 @@ impl Scene {
             .iter()
             .filter(|(k, n)| self.geoms.get(*k).is_some_and(|e| e.refs == **n))
             .filter_map(|(k, _)| self.geom_ready(k))
-            .flat_map(|geom| {
+            .map(|geom| -> u64 {
                 // (the arena's index buffer is u16)
                 geom.faces
                     .iter()
                     .flatten()
                     .map(|a| a.vertex_count as u64 * std::mem::size_of::<Vertex>() as u64 + a.index_count as u64 * 2)
+                    .sum()
             })
             .sum();
         let (textures, texture_bytes) = self.textures.beam_floor();
