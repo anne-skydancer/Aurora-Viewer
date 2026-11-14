@@ -280,10 +280,8 @@ pub fn mask_table(samples: u32) -> Vec<u32> {
 /// The tile of ranks (a permutation of 0..4095, blue noise), `[y * TILE + x]`:
 /// stratum (rank + 0.5) / 4096 of xi, the value that dithers R in a pixel.
 pub fn tile_ranks() -> Vec<u32> {
-    TILE_BYTES
-        .chunks_exact(2)
-        .map(|b| u32::from(u16::from_le_bytes([b[0], b[1]])))
-        .collect()
+    let (pairs, _) = TILE_BYTES.as_chunks::<2>();
+    pairs.iter().map(|&b| u32::from(u16::from_le_bytes(b))).collect()
 }
 
 /// What the masks buffer holds for `samples` bits: the table of masks
