@@ -250,6 +250,7 @@ impl Scene {
             let model = Mat4::from_scale_rotation_translation(scale, rot, pos);
             let g = &mut self.gpu[idx];
             g.center = model.transform_point3((geom.min + geom.max) * 0.5);
+            g.origin = pos;
             g.radius = (((geom.max - geom.min) * scale * 0.5).length()).max(0.05);
             self.pick.changed(idx);
         }

@@ -767,7 +767,7 @@ fn light(cx: &mut Cx) {
                         enabled,
                         egui::Slider::new(
                             &mut s.projector_shadow_limit,
-                            1..=aurora_render::projector_shadows::MAX_PROJECTOR_SHADOWS as u8,
+                            1..=aurora_render::projector_shadows::MAX_PROJECTOR_MAPS as u8,
                         )
                         .trailing_fill(true),
                     )

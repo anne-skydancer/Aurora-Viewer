@@ -178,6 +178,7 @@ fn source() -> Option<DemoSource> {
     crate::scene::texture_budget::forced_target().map(|_| DemoSource {
         has: |id| texture_index(id).is_some(),
         texels: |id, discard| texture_index(id).map_or(Vec::new(), |i| texture_mips(i, discard as u32)),
+        alpha: (AlphaKind::Opaque, false),
     })
 }
 

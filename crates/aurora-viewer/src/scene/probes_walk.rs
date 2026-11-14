@@ -39,6 +39,7 @@ fn face() -> crate::scene::FaceDraw {
         rez_glow: false,
         system: None,
         first_person_hidden: false,
+        shadow: None,
     }
 }
 /// A number in 0..1 from an index and a stream.

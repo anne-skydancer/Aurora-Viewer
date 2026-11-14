@@ -2,7 +2,13 @@
 //! original tiles; projector maps keep half a cascade's resolution as the
 //! atlas grows, so increasing the budget never reduces per-map quality.
 
+/// Maps of the atlas and bins of the culling: the projectors' and the rain
+/// shelter's.
 pub const MAX_PROJECTOR_SHADOWS: usize = 16;
+
+/// Projectors that can hold a map: one map is always left to the rain's
+/// shelter, so that it never takes a projector's.
+pub const MAX_PROJECTOR_MAPS: usize = MAX_PROJECTOR_SHADOWS - 1;
 
 pub fn atlas_size(cascade: u32, count: u8) -> (u32, u32) {
     let extra = u32::from(count.min(MAX_PROJECTOR_SHADOWS as u8)).saturating_sub(4).div_ceil(4);
@@ -19,12 +25,14 @@ pub fn map_origin(cascade: u32, slot: usize) -> (u32, u32) {
     }
 }
 
-/// Effective budget at the requested sun resolution on this device. Never
-/// silently lower sun or projector resolution to accommodate more maps.
+/// Effective budget at the requested sun resolution on this device: at most
+/// [`MAX_PROJECTOR_MAPS`], and with room in the atlas for the shelter's map
+/// past them. Never silently lower sun or projector resolution to
+/// accommodate more maps.
 pub fn effective_limit(resolution: u32, requested: u8, max_dimension: u32) -> u8 {
     let size = resolution.clamp(512, 8192).min(max_dimension / 2);
-    let count = requested.min(MAX_PROJECTOR_SHADOWS as u8);
-    (0..=count).rev().find(|&n| atlas_size(size, n).1 <= max_dimension).unwrap_or(0)
+    let count = requested.min(MAX_PROJECTOR_MAPS as u8);
+    (0..=count).rev().find(|&n| atlas_size(size, n + 1).1 <= max_dimension).unwrap_or(0)
 }
 
 /// The map the rain's shelter takes (Aurora Weather): the first one past
@@ -88,6 +96,17 @@ mod tests {
         assert_eq!(atlas_maps(16, 15), 16);
         assert_eq!(shelter_slot(4096, 4, 8192), 3);
         assert_eq!(atlas_maps(4, 3), 4);
+        // the budget the viewer passes always leaves the shelter its own map
+        for limit in 0..=MAX_PROJECTOR_SHADOWS as u8 {
+            for (resolution, max) in [(4096, 16384), (4096, 8192), (2048, 8192), (8192, 16384)] {
+                let count = effective_limit(resolution, limit, max);
+                assert_eq!(
+                    shelter_slot(resolution, count, max),
+                    usize::from(count),
+                    "{limit} {resolution} {max}"
+                );
+            }
+        }
         for count in 0..=MAX_PROJECTOR_SHADOWS as u8 {
             let slot = shelter_slot(4096, count, 16384);
             assert!(slot < MAX_PROJECTOR_SHADOWS);
@@ -98,7 +117,9 @@ mod tests {
     #[test]
     fn projector_budget_respects_texture_limits_without_changing_resolution() {
         assert_eq!(effective_limit(4096, 10, 16384), 10);
-        assert_eq!(effective_limit(4096, 16, 8192), 4);
-        assert_eq!(effective_limit(2048, 16, 8192), 16);
+        // never more than 15: the last map is the shelter's
+        assert_eq!(effective_limit(4096, 16, 16384), 15);
+        assert_eq!(effective_limit(4096, 16, 8192), 3);
+        assert_eq!(effective_limit(2048, 16, 8192), 15);
     }
 }
