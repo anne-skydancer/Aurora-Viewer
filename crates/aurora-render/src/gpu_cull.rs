@@ -2762,6 +2762,9 @@ mod tests {
         // words and the highest frame-flag bit.
         for k in 0..SPOT_SHADOWS {
             frame.sizes[3] |= frame_flags::SPOT << k;
+            // what each beam resolves: the near objects of the map, not the far ones
+            frame.spot_apex[k] = [0.0, 0.0, 0.0, 0.1];
+            frame.spot_scale[k] = [256.0 + 32.0 * k as f32, 0.0, 0.0, 0.0];
         }
         // caster volumes: the east half in the second cascade, a slanted slab in the third
         frame.shadow_planes[1][0] = [-1.0, 0.0, 0.0, 5.0];
@@ -2847,7 +2850,10 @@ mod tests {
         assert!(expect.iter().take(MAIN_BINS + 3).all(|e| !e.is_empty()), "every bin used");
         assert!(
             expect[BIN_SPOT..BIN_SPOT + SPOT_SHADOWS - 1].iter().all(|e| !e.is_empty()),
-            "every projector shadow bin used"
+            "every projector shadow bin used; empty: {:?}",
+            (0..SPOT_SHADOWS - 1)
+                .filter(|k| expect[BIN_SPOT + k].is_empty())
+                .collect::<Vec<_>>()
         );
         assert!(
             expect[BIN_SHADOW_ALPHA..BIN_SHADOW_ALPHA + 3].iter().all(|e| !e.is_empty()),
