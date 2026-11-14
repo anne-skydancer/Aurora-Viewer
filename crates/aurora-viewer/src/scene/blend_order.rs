@@ -332,6 +332,18 @@ fn precision_at(level: u8) -> aurora_render::BlendPrecision {
     }
 }
 
+/// Whether stochastic transparency (`Settings::oit`, `AURORA_OIT`) takes the
+/// blended faces this frame: an explicit opt-in that replaces the order of
+/// transparent surfaces, Exact included. The faces then stay in the sorted
+/// lists, which every fallback of the method draws (a photo, a snapshot,
+/// memory refused).
+static STOCHASTIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Every frame, before the lists are made.
+pub fn set_stochastic(on: bool) {
+    STOCHASTIC.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// With `alt`: the current second draws as `split`.
 static OLD_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -348,7 +360,19 @@ pub fn rigged_apart() -> bool {
 pub fn depth_mode() -> RiggedBlendDepth {
     use std::sync::atomic::Ordering::Relaxed;
     let mode = chosen_mode(mode(), mode_named(), USER.load(Relaxed));
-    drawable(depth_mode_in(mode, OLD_NOW.load(Relaxed)), EXACT_AVAILABLE.load(Relaxed))
+    stochastic_over_exact(
+        drawable(depth_mode_in(mode, OLD_NOW.load(Relaxed)), EXACT_AVAILABLE.load(Relaxed)),
+        STOCHASTIC.load(Relaxed),
+    )
+}
+
+/// The exact order never goes with stochastic transparency: the sorted lists
+/// it keeps under it (`AURORA_RIGGED_BLEND=exact` included).
+fn stochastic_over_exact(depth: RiggedBlendDepth, stochastic: bool) -> RiggedBlendDepth {
+    match depth {
+        RiggedBlendDepth::Exact if stochastic => RiggedBlendDepth::Layers,
+        depth => depth,
+    }
 }
 
 /// The order of this run: the one AURORA_RIGGED_BLEND names, else the exact
@@ -556,6 +580,16 @@ mod tests {
         assert_eq!(drawable(RiggedBlendDepth::Exact, true), RiggedBlendDepth::Exact);
         assert_eq!(drawable(RiggedBlendDepth::Exact, false), RiggedBlendDepth::Layers);
         assert_eq!(drawable(RiggedBlendDepth::Split, false), RiggedBlendDepth::Split);
+    }
+
+    /// Stochastic transparency keeps the sorted lists under it; main's other
+    /// modes stay as they are with it off.
+    #[test]
+    fn stochastic_transparency_replaces_the_exact_order_only() {
+        assert_eq!(stochastic_over_exact(RiggedBlendDepth::Exact, true), RiggedBlendDepth::Layers);
+        assert_eq!(stochastic_over_exact(RiggedBlendDepth::Exact, false), RiggedBlendDepth::Exact);
+        assert_eq!(stochastic_over_exact(RiggedBlendDepth::Split, true), RiggedBlendDepth::Split);
+        assert_eq!(stochastic_over_exact(RiggedBlendDepth::Layers, true), RiggedBlendDepth::Layers);
     }
 
     #[test]

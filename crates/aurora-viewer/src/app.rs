@@ -10834,6 +10834,7 @@ impl App {
             _ => false,
         };
         crate::scene::blend_order::set_user(self.settings.blend_order, gfx.renderer.blend_exact_supported() && !msaa);
+        crate::scene::blend_order::set_stochastic(aurora_render::oit_stochastic::wanted(self.settings.oit));
         if let Some(mode) = crate::demo::aa_switch::due(&mut self.aa_switch_demo, self.frame_count) {
             log::info!("demo: anti-aliasing {mode} at frame {}", self.frame_count);
             self.settings.antialiasing = mode;
