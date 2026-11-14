@@ -4009,6 +4009,17 @@ impl Backend {
                 },
                 count: None,
             },
+            // the soft shadows' mask (soft_shadows.rs)
+            wgpu::BindGroupLayoutEntry {
+                binding: 29,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ];
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("frame"),
