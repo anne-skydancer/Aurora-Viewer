@@ -40,6 +40,9 @@ use std::time::{Duration, Instant};
 
 pub const CASCADES: usize = 3;
 const MAX_LIGHTS: usize = 64;
+/// Index in `FrameU::features` of the face-select pattern's texture slot
+/// (common.wgsl FEATURE_FACE_SELECT_SLOT).
+const FEATURE_FACE_SELECT_SLOT: usize = 2;
 /// Tries at setting up the XR session for one VR request, and the wait
 /// between them (`render_xr`).
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
@@ -1072,6 +1075,8 @@ struct Pipelines {
     physics_wire: Option<wgpu::RenderPipeline>,
     select_child_wire: Option<wgpu::RenderPipeline>,
     selection_mask: wgpu::RenderPipeline,
+    /// The face-select pattern over the selected faces (selection.rs).
+    selection_pattern: wgpu::RenderPipeline,
     /// The poser's hovered part on the subject's skinned faces.
     part_mask: wgpu::RenderPipeline,
     /// The visible part of the subject's faces (part_pick.rs).
@@ -3353,6 +3358,7 @@ struct Ranges {
     physics_shapes: (u64, u32),
     select_child: (u64, u32),
     select_faces: (u64, u32),
+    select_pattern: (u64, u32),
     part_faces: (u64, u32),
     refl_water: (u64, u32),
     water_air: (u64, u32),
@@ -4949,6 +4955,23 @@ impl Backend {
             },
             ..base("selected face coverage", "vs_main", "fs_selection_mask")
         });
+        // The face-select pattern (LLPipeline::renderSelectedFaces), blended
+        // over the finished image of the world view or of the HUDs, both in
+        // the surface format, with the coverage pass's depth state.
+        let selection_pattern = pipe(PipeDesc {
+            cull: None,
+            samples: 1,
+            format: Some(surface_format),
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            depth_write: false,
+            depth_bias: wgpu::DepthBiasState {
+                constant: 1,
+                slope_scale: 0.0,
+                clamp: 0.0,
+            },
+            constants: &hud_constants,
+            ..base("selected face pattern", "vs_main", "fs_selection_pattern")
+        });
         // The poser's hovered part: the subject's skinned faces kept where
         // their weights are the part's joints (`vs_part_mask`)
         let part_mask = pipe(part_desc(
@@ -5331,6 +5354,7 @@ impl Backend {
             select_root_wire,
             select_child_wire,
             selection_mask,
+            selection_pattern,
             part_mask,
             part_pick,
             ssr: ssr_pipe,
@@ -6728,6 +6752,8 @@ impl Backend {
         ];
         u.rain_wind = [f.rain_look.drift[0], f.rain_look.drift[1], f.rain_look.wind[0], f.rain_look.wind[1]];
         u.selection_color = f.selection_color;
+        // (object.wgsl fs_selection_pattern; 0: its procedural stand-in)
+        u.features[FEATURE_FACE_SELECT_SLOT] = f.face_select_texture;
         u.part_joints = [
             [f.part_joints[0], f.part_joints[1], f.part_joints[2], f.part_joints[3]],
             [f.part_joints[4], f.part_joints[5], f.part_joints[6], f.part_joints[7]],
@@ -8708,6 +8734,7 @@ impl Backend {
         let hud_debug_red_range = push(cpu, &lists.hud_debug_red);
         let hud_debug_blue_range = push(cpu, &lists.hud_debug_blue);
         let hud_select_faces_range = push(cpu, &lists.hud_select_faces);
+        let hud_select_pattern_range = push(cpu, &lists.hud_select_pattern);
         rg.debug_red = push(cpu, &lists.debug_red);
         rg.land_overlay = push(cpu, &lists.land_overlay);
         rg.debug_blue = push(cpu, &lists.debug_blue);
@@ -8718,6 +8745,7 @@ impl Backend {
         rg.physics_shapes = push(cpu, &lists.physics_shapes);
         rg.select_child = push(cpu, &lists.select_child);
         rg.select_faces = push(cpu, &lists.select_faces);
+        rg.select_pattern = push(cpu, &lists.select_pattern);
         rg.part_faces = push(cpu, &lists.part_faces);
         let imp_ranges: Vec<((u64, u32), (u64, u32))> = imp_caps.iter().map(|c| (push(cpu, &c.opaque), push(cpu, &c.blend))).collect();
         // reflection passes: each culled to its own frustum
@@ -11005,6 +11033,19 @@ impl Backend {
             calls.set(calls.get() + 1);
         }
 
+        // The face-select pattern is drawn whether or not "Show highlight"
+        // gives the halo any face: the Legacy Viewer's renderHighlights calls
+        // renderSelectedFaces without reading RenderHighlightSelections. It
+        // needs only its own list and the depth, and goes before the halo.
+        // It carries no timestamp: the frame's last one is written by the
+        // pass before it, or by the halo's when that follows.
+        if rg.select_pattern.1 > 0 {
+            let mut pass = crate::selection::begin_pattern(&mut encoder, scene_target, post_depth);
+            bind_mesh(&mut pass, &self.groups.b);
+            draw(&mut pass, &self.pipelines.selection_pattern, rg.select_pattern);
+            drop(pass);
+            calls.set(calls.get() + 1);
+        }
         if rg.select_faces.1 > 0
             && let Some(selection) = &self.selection
         {
@@ -11315,6 +11356,19 @@ impl Backend {
             draw(&mut pass, &self.pipelines.hud_blend, hud_blend_range);
             draw(&mut pass, &self.pipelines.hud_debug_red, hud_debug_red_range);
             draw(&mut pass, &self.pipelines.hud_debug_blue, hud_debug_blue_range);
+        }
+        // the HUD faces' pattern, whatever "Show highlight" says (above); only when
+        // the HUD pass ran, which clears the HUD depth. With the halo off this pass
+        // carries no timestamp, so its time is not in the GPU total.
+        if draw_huds
+            && hud_select_pattern_range.1 > 0
+            && let Some((_, _, depth)) = &self.hud_depth
+        {
+            let mut pass = crate::selection::begin_pattern(&mut encoder, &surface_view, depth);
+            bind_mesh(&mut pass, &self.groups.refl[5]);
+            draw(&mut pass, &self.pipelines.selection_pattern, hud_select_pattern_range);
+            drop(pass);
+            calls.set(calls.get() + 1);
         }
         if hud_select_faces_range.1 > 0
             && let (Some(selection), Some((_, _, depth))) = (&self.hud_selection, &self.hud_depth)
