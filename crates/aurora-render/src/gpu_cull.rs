@@ -1781,7 +1781,7 @@ mod tests {
                 .trim_end_matches('u');
             v.parse().unwrap_or_else(|_| panic!("{name}: {v}"))
         };
-        let pairs: [(&str, u32); 53] = [
+        let pairs: [(&str, u32); 54] = [
             ("F_PROBE_SHADOW", frame_flags::PROBE_SHADOW),
             ("F_FIRST_PERSON", frame_flags::FIRST_PERSON),
             ("F_SHOW_SELF", frame_flags::SHOW_SELF),
@@ -1791,6 +1791,7 @@ mod tests {
             ("BIN_WATER_EXCLUSION", BIN_WATER_EXCLUSION as u32),
             ("BIN_SHADOW_ALPHA", BIN_SHADOW_ALPHA as u32),
             ("BIN_SPOT", BIN_SPOT as u32),
+            ("SPOT_MAPS", SPOT_SHADOWS as u32),
             ("F_SPOT", frame_flags::SPOT),
             ("F_SPOT_ANY", frame_flags::SPOT_ANY),
             ("COUNT_SHADOW", COUNT_SHADOW as u32),

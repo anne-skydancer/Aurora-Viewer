@@ -33,6 +33,8 @@ const BIN_REFL_MIRROR: u32 = 8u;
 const BIN_PROBE: u32 = 9u;
 const BIN_SHADOW_ALPHA: u32 = 10u;
 const BIN_SPOT: u32 = 13u;
+// the projectors' shadow maps (one bin each, from BIN_SPOT): SPOT_SHADOWS in gpu_cull.rs
+const SPOT_MAPS: u32 = 16u;
 // argument regions after the bins: occlusion phase 1 and phase 2 prepass
 // lists of each main bin (own counts)
 const REGION_PRE1: u32 = 31u;
@@ -634,8 +636,9 @@ fn pack_bins(m: u32) -> BinPack {
 
 // `projector`: a projector's shadow bin (not the rain's shelter map): a face
 // with a shadow range draws it there when it fits the index buffer, else the
-// camera's range (a stale range after the arena grew must not draw another
-// mesh's vertices).
+// camera's range (`range_fits` only bounds the index range, as
+// `index_range_fits` does: it cannot tell a stale `base_vertex`, which the
+// arena's stable allocations keep right).
 fn write_args(slot: u32, f: CullFace, rec: u32, instances: u32, projector: bool) {
     let a = slot * 5u;
     var first_index = f.first_index;
@@ -693,7 +696,7 @@ fn cs_scatter(
     let f = faces[i];
     let cap = frame.sizes.z;
     let fl = frame.sizes.w;
-    let shelter_map = min(frame.groups.w, 15u);
+    let shelter_map = min(frame.groups.w, SPOT_MAPS - 1u);
     let occlusion = (fl & F_OCCLUSION) != 0u;
     for (var b = 0u; b < BINS; b++) {
         if (((m >> b) & 1u) == 0u) {
@@ -708,7 +711,7 @@ fn cs_scatter(
         let rank = (packed >> ((b & 3u) * 8u)) & 0xffu;
         let pos = group_data[wid.x * BINS + b] + rank;
         // the projectors' bins, but not the rain's shelter map
-        let projector = b >= BIN_SPOT && b < BIN_SPOT + 16u && !((fl & F_SPOT_SHELTER) != 0u && b == BIN_SPOT + shelter_map);
+        let projector = b >= BIN_SPOT && b < BIN_SPOT + SPOT_MAPS && !((fl & F_SPOT_SHELTER) != 0u && b == BIN_SPOT + shelter_map);
         write_args(b * cap + pos, f, i, 1u, projector);
         if (b < MAIN_BINS && occlusion) {
             // phase 1 prepass: what was visible last frame
