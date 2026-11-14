@@ -53,7 +53,8 @@
 //! frame by the golden ratio conjugate (in 24-bit fixed point, so it stays
 //! exact at any frame number) instead of being drawn again: eight
 //! consecutive frames hold eight well spread values of xi (paper section 5,
-//! stratified seeds), and the sum of their R stays within 1 of 8 alpha S.
+//! stratified seeds), and the sum of their R stays within 1.4 of 8 alpha S
+//! (the three-gap bound of 8 golden-ratio points).
 //! Needs multisampled targets of at least 2 samples (every device has 4), and `PRIMITIVE_INDEX` for the
 //! triangle in the seed (without it the seed is per face: coplanar
 //! fragments of one face then occlude instead of blending).
@@ -1546,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tile_balances_every_8x8_block_better_than_white_noise() {
+    fn the_tile_block_means_are_tighter_than_white_noise_in_rms() {
         let tile = tile_ranks();
         // the same strata in a white-noise order (a shuffle by `st_hash`)
         let mut white: Vec<u32> = (0..TILE_CELLS as u32).collect();
@@ -1603,7 +1604,9 @@ mod tests {
                     for f in 0..8u32 {
                         let frame = f0.wrapping_add(f);
                         weyl += r_of(a, 8, xi24(tile[k], rot, frame_fraction(frame)));
-                        // the old way: a fresh hash of the frame, every frame
+                        // the baseline: the same tile, but a fresh hash of the frame for the
+                        // rotation every frame (not the shader before the tile, which had a
+                        // white hash per pixel): it isolates the stratification over frames
                         hashed += r_of(a, 8, xi24(tile[k], st_hash(rot ^ st_hash(frame).wrapping_mul(3)) >> 8, 0));
                     }
                     let want = f64::from(a) * 64.0;
@@ -1617,8 +1620,10 @@ mod tests {
             }
         }
         let (weyl_rms, hash_rms) = ((weyl_ss / n).sqrt(), (hash_ss / n).sqrt());
-        // measured: stratified max 1.0, rms 0.37; hashed max 4, rms 1.14
-        assert!(weyl_max <= 1.0, "stratified max {weyl_max}");
+        // measured: stratified max 1.0 on this sample (1.39 is the worst case
+        // over every arc of 8 golden-ratio points), rms 0.37; hashed max 4,
+        // rms 1.14
+        assert!(weyl_max <= 1.4, "stratified max {weyl_max}");
         assert!(weyl_rms < 0.5, "stratified rms {weyl_rms}");
         assert!(
             weyl_rms < hash_rms * 0.5 && weyl_max < hash_max,
@@ -1643,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mean_of_r_over_the_tile_is_alpha_times_s_for_any_rotation() {
+    fn the_mean_of_r_over_the_tile_is_alpha_times_s_within_a_stratum_for_any_rotation() {
         let tile = tile_ranks();
         for s in [2u32, 4, 8] {
             for ai in 0..=64 {
@@ -1660,6 +1665,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_stratified_sum_stays_within_the_three_gap_bound_over_every_rotation() {
+        // 8 consecutive golden-ratio points leave arcs of at most 3 lengths:
+        // the sum of R over 8 frames is within 1.4 of 8 a S for a rotation
+        // swept every 2^16 (the offset of a fragment's own xi), whatever the
+        // frame it starts at
+        let mut worst = 0.0f64;
+        for ai in 1..64 {
+            let a = ai as f32 / 64.0;
+            for j in 0..256u32 {
+                let rot = j << 16;
+                for f0 in [0u32, 777, 0xffff_fff8] {
+                    let sum: u32 = (0..8u32)
+                        .map(|f| r_of(a, 8, xi24(2047, rot, frame_fraction(f0.wrapping_add(f)))))
+                        .sum();
+                    worst = worst.max((f64::from(sum) - f64::from(a) * 64.0).abs());
+                }
+            }
+        }
+        assert!(worst <= 1.4, "worst {worst}");
+    }
+
+    #[test]
+    fn the_shader_constants_are_the_rust_ones() {
+        let object = include_str!("shaders/object.wgsl").replace(
+            "
+", "
+",
+        );
+        assert!(object.contains(&format!("const ST_SEEDS: u32 = {SEEDS}u;")));
+        assert!(object.contains(&format!("const ST_TILE: u32 = {TILE}u;")));
+        // xi's grid: (2 rank + 1) * 2048 of 2^24, and the frame's fraction
+        assert!(object.contains("((2u * rank + 1u) * 2048u + (layer >> 8u) + frame) & 0xffffffu"));
+        assert!(object.contains("frame = st.frame_seed >> 8u;"));
+        // the tile follows the S + 1 rows of the mask table
+        assert!(object.contains("st_masks[(st.samples + 1u) * ST_SEEDS + (px.y & (ST_TILE - 1u)) * ST_TILE"));
+        assert_eq!(mask_buffer(8).len(), mask_table(8).len() + TILE_CELLS);
+        assert_eq!(mask_table(8).len(), 9 * SEEDS as usize);
     }
 
     /// The shader's `st_hash` (PCG) and its per-pixel, per-layer subset index.
