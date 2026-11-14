@@ -295,6 +295,13 @@ pub struct CullObject {
     /// Bounding sphere (center, radius), in the world or in the space of
     /// `anchor`.
     pub sphere: [f32; 4],
+    /// The sphere the projectors' shadow maps take this object as a caster
+    /// with (its origin and half its scale diagonal, which no level of
+    /// detail changes), in the same space as `sphere`: the world, or the
+    /// anchor's. A radius of 0 (or a posed object) says it has none: the
+    /// projectors take `sphere`, as every other view does. Only the
+    /// projectors' bins read it (`CullObject::world_beam`).
+    pub beam: [f32; 4],
     pub flags: u32,
     /// Avatar whose state applies: itself, the wearer of an attachment, or
     /// `NO_OBJECT`.
@@ -338,6 +345,7 @@ impl JointBox {
 impl CullObject {
     pub const NONE: CullObject = CullObject {
         sphere: [0.0; 4],
+        beam: [0.0; 4],
         flags: 0,
         avatar: NO_OBJECT,
         state: 0,
@@ -406,6 +414,24 @@ impl CullObject {
     }
 }
 
+impl CullObject {
+    /// World sphere the projectors' shadow maps take this object with
+    /// (reference of `world_beam` in cull.wgsl): its `beam` placed like
+    /// `sphere` (an anchor's matrix is rigid: the radius is kept), or
+    /// `camera`, the world sphere of the camera's views, when it has no beam
+    /// sphere or is posed.
+    pub fn world_beam(&self, camera: (Vec3, f32), palettes: &[[[f32; 4]; 4]]) -> (Vec3, f32) {
+        if self.beam[3] <= 0.0 || self.flags & object_flags::POSED != 0 {
+            return camera;
+        }
+        let c = Vec3::new(self.beam[0], self.beam[1], self.beam[2]);
+        match self.anchor.checked_sub(1).and_then(|a| palettes.get(a as usize)) {
+            Some(anchor) => (Mat4::from_cols_array_2d(anchor).transform_point3(c), self.beam[3]),
+            None => (c, self.beam[3]),
+        }
+    }
+}
+
 /// A posed sphere larger than this, or this far from its skeleton, comes
 /// from a palette that is not a pose (not sized yet, garbage): the anchored
 /// sphere is kept.
@@ -416,6 +442,12 @@ pub const POSED_COORD_MAX: f32 = 1.0e6;
 /// World sphere of every object (reference of `cs_spheres`).
 pub fn world_spheres(objects: &[CullObject], palettes: &[[[f32; 4]; 4]], binds: &[SkinBind], boxes: &[JointBox]) -> Vec<(Vec3, f32)> {
     objects.iter().map(|o| o.world_sphere(palettes, binds, boxes)).collect()
+}
+
+/// World sphere the projectors' shadow maps take each object with (reference
+/// of the second half of `spheres` in `cs_spheres`); `spheres`: `world_spheres`.
+pub fn world_beams(objects: &[CullObject], palettes: &[[[f32; 4]; 4]], spheres: &[(Vec3, f32)]) -> Vec<(Vec3, f32)> {
+    objects.iter().zip(spheres).map(|(o, s)| o.world_beam(*s, palettes)).collect()
 }
 
 /// Per-frame culling parameters (must match `CullFrame` in cull.wgsl).
@@ -578,8 +610,16 @@ pub fn spot_resolves_at(apex: [f32; 4], scale: f32, c: Vec3, r: f32) -> bool {
 
 /// Reference of `face_mask` in cull.wgsl (kept line for line): the bins of
 /// face `i`, and whether it counts as a visible object. `spheres`: the
-/// world sphere of each object (`world_spheres`).
-pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], spheres: &[(Vec3, f32)], i: usize) -> (u32, bool) {
+/// world sphere of each object (`world_spheres`); `beams`: the sphere of each
+/// that the projectors' maps take it with (`world_beams`).
+pub fn face_bins(
+    frame: &CullFrame,
+    faces: &[CullFace],
+    objects: &[CullObject],
+    spheres: &[(Vec3, f32)],
+    beams: &[(Vec3, f32)],
+    i: usize,
+) -> (u32, bool) {
     let Some(f) = faces.get(i) else {
         return (0, false);
     };
@@ -683,13 +723,16 @@ pub fn face_bins(frame: &CullFrame, faces: &[CullFace], objects: &[CullObject], 
                 continue;
             }
             // the shelter map takes what `shelters` kept (large, in its
-            // square) that stands still; a projector's, what its beam resolves
-            let takes = if shelter_bit >> 16 == 1 << k {
-                shelters && !moves
+            // square) that stands still, by the camera's sphere; a
+            // projector's, what its beam resolves, by the beam sphere (no
+            // level of detail of the camera moves it)
+            let (takes, tc, tr) = if shelter_bit >> 16 == 1 << k {
+                (shelters && !moves, c, r)
             } else {
-                spot_caster && spot_resolves(frame, k, c, r)
+                let (bc, br) = beams[f.object as usize];
+                (spot_caster && spot_resolves(frame, k, bc, br), bc, br)
             };
-            if takes && sphere_in(planes, c, r) {
+            if takes && sphere_in(planes, tc, tr) {
                 m |= 1 << (BIN_SPOT + k);
             }
         }
@@ -1090,8 +1133,9 @@ pub struct GpuCull {
     /// Largest clamped-face count logged this session (`new_clamped_max`).
     clamped_logged: u32,
     max_groups: u32,
-    /// World sphere of each object this frame (`cs_spheres`), and the
-    /// objects it has room for.
+    /// World sphere of each object this frame (`cs_spheres`), then, from
+    /// `sphere_cap` on, the sphere the projectors' maps take each with
+    /// (`world_beams`); and the objects it has room for.
     spheres: wgpu::Buffer,
     sphere_cap: u32,
     /// This frame: objects of the scene's table.
@@ -1228,7 +1272,7 @@ impl GpuCull {
             last: CullCounts::default(),
             clamped_logged: 0,
             max_groups: device.limits().max_compute_workgroups_per_dimension,
-            spheres: Self::make_storage(device, "cull spheres", 4096 * 16),
+            spheres: Self::make_storage(device, "cull spheres", 4096 * 32),
             sphere_cap: 4096,
             objects: 0,
             face_backoff: Backoff::default(),
@@ -1332,7 +1376,7 @@ impl GpuCull {
             let preferred = objects.next_power_of_two().min(sphere_capacity(&limits));
             let mut failure = None;
             for cap in fallback_capacities(self.sphere_cap, objects - self.sphere_cap, preferred, 1) {
-                match try_buffer(device, &Self::storage_desc("cull spheres", u64::from(cap) * 16)) {
+                match try_buffer(device, &Self::storage_desc("cull spheres", u64::from(cap) * 32)) {
                     Ok(spheres) => {
                         self.spheres = spheres;
                         self.sphere_cap = cap;
@@ -1646,10 +1690,21 @@ mod tests {
                 "shadow_base_vertex"
             ]
         );
-        assert_eq!(std::mem::size_of::<CullObject>(), 48);
+        assert_eq!(std::mem::size_of::<CullObject>(), 64);
         assert_eq!(
             wgsl_fields(src, "CullObject"),
-            ["sphere", "flags", "avatar", "state", "anchor", "boxes", "box_count", "binds", "_p"]
+            [
+                "sphere",
+                "beam",
+                "flags",
+                "avatar",
+                "state",
+                "anchor",
+                "boxes",
+                "box_count",
+                "binds",
+                "_p"
+            ]
         );
         assert_eq!(std::mem::size_of::<JointBox>(), 32);
         assert_eq!(wgsl_fields(src, "JointBox"), ["min", "joint", "max", "_p"]);
@@ -1731,12 +1786,14 @@ mod tests {
                 ..CullFace::NONE
             },
         ];
-        let original: Vec<_> = (0..faces.len()).map(|i| face_bins(&frame, &faces, &objects, &spheres, i)).collect();
+        let original: Vec<_> = (0..faces.len())
+            .map(|i| face_bins(&frame, &faces, &objects, &spheres, &spheres, i))
+            .collect();
         assert!(original.iter().all(|v| v.0 & 1 != 0));
         frame.groups[1] = 1;
         frame.sizes[3] |= frame_flags::FIRST_PERSON | frame_flags::SHOW_SELF;
         for (i, original_mask) in original.iter().enumerate() {
-            let (mask, _) = face_bins(&frame, &faces, &objects, &spheres, i);
+            let (mask, _) = face_bins(&frame, &faces, &objects, &spheres, &spheres, i);
             if i == 1 || i == 2 {
                 assert_eq!(mask & 15, 0, "own head/attachment must not enter depth or colour bins");
                 assert_eq!(
@@ -1750,13 +1807,13 @@ mod tests {
         }
         frame.sizes[3] &= !frame_flags::SHOW_SELF;
         for i in 0..3 {
-            assert_eq!(face_bins(&frame, &faces, &objects, &spheres, i), (0, false));
+            assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, i), (0, false));
         }
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 3), original[3]);
+        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, 3), original[3]);
         frame.sizes[3] &= !frame_flags::FIRST_PERSON;
         for (i, expected) in original.into_iter().enumerate() {
             assert_eq!(
-                face_bins(&frame, &faces, &objects, &spheres, i),
+                face_bins(&frame, &faces, &objects, &spheres, &spheres, i),
                 expected,
                 "leaving mouselook restores immediately"
             );
@@ -2003,7 +2060,7 @@ mod tests {
     }
 
     fn spot_bit(frame: &CullFrame, objects: &[CullObject], spheres: &[(Vec3, f32)], faces: &[CullFace], i: usize) -> bool {
-        face_bins(frame, faces, objects, spheres, i).0 >> BIN_SPOT & 1 == 1
+        face_bins(frame, faces, objects, spheres, spheres, i).0 >> BIN_SPOT & 1 == 1
     }
 
     /// The owner's principle for the casters of a projector's map: wherever
@@ -2067,6 +2124,98 @@ mod tests {
         }
     }
 
+    /// A projector's map takes its casters by the beam sphere (the origin
+    /// and half the scale diagonal), not by the bounds the camera's level of
+    /// detail gives: a coarser level has other bounds, and an object at the
+    /// beam's edge or at its one-texel threshold must not enter or leave the
+    /// map when only the camera moved. The rain's shelter map and the other
+    /// views keep the camera's sphere.
+    #[test]
+    fn the_beam_sphere_decides_the_projector_bins() {
+        let faces: Vec<CullFace> = (0..5)
+            .map(|i| CullFace {
+                index_count: 3,
+                first_index: 0,
+                base_vertex: 0,
+                object: i,
+                bits: FACE_FIRST | pass::OPAQUE,
+                shadow: [0; 3],
+            })
+            .collect();
+        let object = |camera: [f32; 4], beam: [f32; 4]| CullObject {
+            sphere: camera,
+            beam,
+            flags: object_flags::ACTIVE,
+            ..CullObject::NONE
+        };
+        // the beam holds x in 0..60 and |y|, |z| < 20; a texel at 1 m x 1024 / d
+        let mut objects = vec![
+            // camera sphere out of the beam, beam sphere in it
+            object([10.0, 50.0, 0.0, 1.0], [10.0, 0.0, 0.0, 1.0]),
+            // the reverse
+            object([10.0, 0.0, 0.0, 1.0], [10.0, 50.0, 0.0, 1.0]),
+            // the camera's level has bounds that resolve a texel (1 x 1024 / 50),
+            // the beam sphere does not (0.01 x 1024 / 50 < 1)
+            object([50.0, 0.0, 0.0, 1.0], [50.0, 0.0, 0.0, 0.01]),
+            // and the reverse
+            object([50.0, 0.0, 0.0, 0.01], [50.0, 0.0, 0.0, 1.0]),
+            // no beam sphere: the camera's
+            object([10.0, 0.0, 0.0, 1.0], [0.0; 4]),
+        ];
+        let palettes = [Mat4::from_translation(Vec3::new(7.0, 0.0, 0.0)).to_cols_array_2d()];
+        let mut frame = spot_frame(Vec3::new(-300.0, 0.0, 0.0), Vec3::X);
+        frame.sizes[1] = 5;
+        let bins = |frame: &CullFrame, objects: &[CullObject], palettes: &[[[f32; 4]; 4]]| -> Vec<bool> {
+            let spheres = world_spheres(objects, palettes, &[], &[]);
+            let beams = world_beams(objects, palettes, &spheres);
+            (0..objects.len())
+                .map(|i| face_bins(frame, &faces, objects, &spheres, &beams, i).0 >> BIN_SPOT & 1 == 1)
+                .collect()
+        };
+        assert_eq!(bins(&frame, &objects, &palettes), [true, false, false, true, true]);
+        // the same objects with their beam spheres taken away follow the
+        // camera's, which says the table is what the test reads
+        for o in &mut objects {
+            o.beam = [0.0; 4];
+        }
+        assert_eq!(bins(&frame, &objects, &palettes), [false, true, true, false, true]);
+        // a beam sphere placed from the anchor like the camera's one; a posed
+        // object's is its camera sphere, whatever its table says
+        let worn = |flags: u32| CullObject {
+            sphere: [3.0, 50.0, 0.0, 1.0],
+            beam: [3.0, 0.0, 0.0, 1.0],
+            flags: object_flags::ACTIVE | flags,
+            anchor: 1,
+            ..CullObject::NONE
+        };
+        let objects = [worn(0), worn(object_flags::POSED), worn(0), worn(0), worn(0)];
+        let spheres = world_spheres(&objects, &palettes, &[], &[]);
+        let beams = world_beams(&objects, &palettes, &spheres);
+        assert_eq!(beams[0], (Vec3::new(10.0, 0.0, 0.0), 1.0));
+        assert_eq!(beams[1], spheres[1]);
+        assert_eq!(bins(&frame, &objects, &palettes)[..2], [true, false]);
+        // the shelter map keeps the camera's sphere: a roof by it, a beam
+        // sphere far off
+        let roof = [object([10.0, 0.0, 0.0, 2.0], [10.0, 300.0, 0.0, 2.0]); 5];
+        let mut frame = spot_frame(Vec3::ZERO, Vec3::X);
+        frame.sizes[1] = 5;
+        frame.spots[1] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0, 400.0],
+            [0.0, 1.0, 0.0, 200.0],
+            [0.0, -1.0, 0.0, 200.0],
+            [0.0, 0.0, 1.0, 200.0],
+            [0.0, 0.0, -1.0, 200.0],
+        ];
+        frame.sizes[3] |= frame_flags::SPOT_SHELTER | (frame_flags::SPOT << 1);
+        frame.groups[3] = 1;
+        let spheres = world_spheres(&roof, &[], &[], &[]);
+        let beams = world_beams(&roof, &[], &spheres);
+        let (m, _) = face_bins(&frame, &faces, &roof, &spheres, &beams, 0);
+        assert_eq!(m >> (BIN_SPOT + 1) & 1, 1, "the roof shelters by its camera sphere");
+        assert_eq!(m >> BIN_SPOT & 1, 0, "and no projector holds its beam sphere");
+    }
+
     /// What the main view and the sun's cascades take is still the camera's.
     #[test]
     fn the_camera_still_limits_the_main_view_and_the_cascades() {
@@ -2088,7 +2237,7 @@ mod tests {
         frame.sizes[1] = 1;
         // 100 m away with 64 m of draw distance: not drawn, no shadow of the
         // sun's, whatever a projector's beam does with it
-        let (m, visible) = face_bins(&frame, &faces, &[far], &spheres, 0);
+        let (m, visible) = face_bins(&frame, &faces, &[far], &spheres, &spheres, 0);
         assert!(!visible);
         assert_eq!(m & 0xf, 0);
         assert_eq!(m >> BIN_SHADOW & 7, 0);
@@ -2138,7 +2287,8 @@ mod tests {
         ];
         frame.sizes[3] |= frame_flags::SPOT_SHELTER | (frame_flags::SPOT << 1);
         frame.groups[3] = 1;
-        let bit = |frame: &CullFrame, i: usize, k: usize| face_bins(frame, &faces, &objects, &spheres, i).0 >> (BIN_SPOT + k) & 1 == 1;
+        let bit =
+            |frame: &CullFrame, i: usize, k: usize| face_bins(frame, &faces, &objects, &spheres, &spheres, i).0 >> (BIN_SPOT + k) & 1 == 1;
         // with a projector map drawn too
         assert!(bit(&frame, 0, 1), "the roof shelters");
         assert!(!bit(&frame, 1, 1), "a tiny object does not");
@@ -2184,16 +2334,19 @@ mod tests {
             ..CullFace::NONE
         }];
         let spheres = world_spheres(&objects, &[], &[], &[]);
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 0), (1 << BIN_WATER_EXCLUSION, true));
+        assert_eq!(
+            face_bins(&frame, &faces, &objects, &spheres, &spheres, 0),
+            (1 << BIN_WATER_EXCLUSION, true)
+        );
         for flag in [object_flags::HUD, object_flags::AVATAR, object_flags::RIGGED] {
             objects[0].flags = object_flags::ACTIVE | flag;
-            assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 0).0, 0);
+            assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, 0).0, 0);
         }
         objects[0].flags = object_flags::ACTIVE;
         objects[0].avatar = 0;
         objects[0].state = avatar_state::FULL;
         assert_eq!(
-            face_bins(&frame, &faces, &objects, &spheres, 0).0,
+            face_bins(&frame, &faces, &objects, &spheres, &spheres, 0).0,
             0,
             "attachments do not exclude water"
         );
@@ -2214,12 +2367,15 @@ mod tests {
             ..CullFace::NONE
         }];
         let spheres = world_spheres(&objects, &[], &[], &[]);
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 0).0 & (1 << BIN_REFL_WATER), 0);
+        assert_eq!(
+            face_bins(&frame, &faces, &objects, &spheres, &spheres, 0).0 & (1 << BIN_REFL_WATER),
+            0
+        );
         let view = glam::camera::rh::view::look_at_mat4(Vec3::ZERO, -Vec3::X, Vec3::Z);
         let proj = glam::camera::rh::proj::directx::perspective_infinite_reverse(1.0, 1.5, 0.1);
         frame.water_air = view_planes(proj * view).map(|p| p.to_array());
         frame.sizes[3] |= frame_flags::WATER_AIR;
-        let (mask, visible) = face_bins(&frame, &faces, &objects, &spheres, 0);
+        let (mask, visible) = face_bins(&frame, &faces, &objects, &spheres, &spheres, 0);
         assert_ne!(mask & (1 << BIN_REFL_WATER), 0, "offscreen exterior must reach its render pass");
         assert!(!visible, "exterior visibility must not make the object visible in the main view");
     }
@@ -2243,7 +2399,7 @@ mod tests {
         let bins = |frame: &CullFrame, radius: f32| {
             let objects = [object(radius)];
             let spheres = world_spheres(&objects, &[], &[], &[]);
-            face_bins(frame, &faces, &objects, &spheres, 0)
+            face_bins(frame, &faces, &objects, &spheres, &spheres, 0)
         };
         // 50 m from the camera, past its reflection distance of 32 m, and in
         // reach of a probe beside it
@@ -2299,40 +2455,55 @@ mod tests {
         let shadows = 0b111 << BIN_SHADOW;
         let spheres = world_spheres(&objects, &[], &[], &[]);
         assert_eq!(
-            face_bins(&frame, &faces, &objects, &spheres, 0),
+            face_bins(&frame, &faces, &objects, &spheres, &spheres, 0),
             (1 | shadows | 1 << BIN_REFL_WATER, true)
         );
         // blended: the CPU draws it; a caster with the alpha test, rigged or
         // not (renderAlphaObjects), unless AURORA_BLEND_SHADOWS=0
         let mut blend = frame;
         blend.sizes[3] |= frame_flags::BLEND_CASTS;
-        assert_eq!(face_bins(&blend, &faces, &objects, &spheres, 1), (0b111 << BIN_SHADOW_ALPHA, true));
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 1), (0, true));
+        assert_eq!(
+            face_bins(&blend, &faces, &objects, &spheres, &spheres, 1),
+            (0b111 << BIN_SHADOW_ALPHA, true)
+        );
+        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, 1), (0, true));
         objects[0].flags |= object_flags::RIGGED;
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 1), (0b111 << BIN_SHADOW_ALPHA, true));
+        assert_eq!(
+            face_bins(&frame, &faces, &objects, &spheres, &spheres, 1),
+            (0b111 << BIN_SHADOW_ALPHA, true)
+        );
         objects[0].flags &= !object_flags::RIGGED;
         // behind the camera: casts only; masked: with the alpha test
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 2).0, 0b111 << BIN_SHADOW_ALPHA);
+        assert_eq!(
+            face_bins(&frame, &faces, &objects, &spheres, &spheres, 2).0,
+            0b111 << BIN_SHADOW_ALPHA
+        );
         // the old path draws every caster with the alpha test
         let mut legacy = frame;
         legacy.sizes[3] |= frame_flags::SHADOW_ALPHA_ALL;
         assert_eq!(
-            face_bins(&legacy, &faces, &objects, &spheres, 0).0,
+            face_bins(&legacy, &faces, &objects, &spheres, &spheres, 0).0,
             1 | 0b111 << BIN_SHADOW_ALPHA | 1 << BIN_REFL_WATER
         );
         // a cascade whose receivers the caster cannot shadow leaves it out
         let mut tight = frame;
         tight.shadow_planes[1][0] = [-1.0, 0.0, 0.0, 5.0];
-        assert_eq!(face_bins(&tight, &faces, &objects, &spheres, 0).0 >> BIN_SHADOW & 7, 0b101);
-        assert_eq!(face_bins(&tight, &faces, &objects, &spheres, 2).0, 0b111 << BIN_SHADOW_ALPHA);
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 3), (0, false));
+        assert_eq!(
+            face_bins(&tight, &faces, &objects, &spheres, &spheres, 0).0 >> BIN_SHADOW & 7,
+            0b101
+        );
+        assert_eq!(
+            face_bins(&tight, &faces, &objects, &spheres, &spheres, 2).0,
+            0b111 << BIN_SHADOW_ALPHA
+        );
+        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, 3), (0, false));
         // an avatar not among the nearest: impostor, nothing on the GPU
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 4), (0, false));
+        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, 4), (0, false));
         objects[3].state = avatar_state::FULL;
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 4).0 & 1, 1);
+        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, 4).0 & 1, 1);
         objects[3].state = avatar_state::FULL | avatar_state::LOADING;
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 4).0, 0);
-        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, 5), (0, true));
+        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, 4).0, 0);
+        assert_eq!(face_bins(&frame, &faces, &objects, &spheres, &spheres, 5), (0, true));
     }
 
     /// A worn object is tested where its anchor puts it: the sphere of the
@@ -2359,16 +2530,15 @@ mod tests {
         assert!(c.distance(Vec3::new(10.0, 0.0, 0.0)) < 1e-5 && r == 1.0);
         let shadows = 0b111 << BIN_SHADOW;
         let palettes = [behind.to_cols_array_2d(), ahead.to_cols_array_2d()];
+        let worn_spheres = world_spheres(&[worn], &palettes, &[], &[]);
         assert_eq!(
-            face_bins(&frame, &faces, &[worn], &world_spheres(&[worn], &palettes, &[], &[]), 0),
+            face_bins(&frame, &faces, &[worn], &worn_spheres, &worn_spheres, 0),
             (1 | shadows | 1 << BIN_REFL_WATER, true)
         );
         // the wearer turned its back to the camera: casts only
         let palettes = [behind.to_cols_array_2d(), behind.to_cols_array_2d()];
-        assert_eq!(
-            face_bins(&frame, &faces, &[worn], &world_spheres(&[worn], &palettes, &[], &[]), 0).0,
-            shadows
-        );
+        let worn_spheres = world_spheres(&[worn], &palettes, &[], &[]);
+        assert_eq!(face_bins(&frame, &faces, &[worn], &worn_spheres, &worn_spheres, 0).0, shadows);
         // an anchor the buffer does not hold: the sphere as it is
         assert_eq!(worn.world_sphere(&[], &[], &[]).0, Vec3::new(0.0, 1.0, 0.0));
     }
@@ -2667,6 +2837,21 @@ mod tests {
             } else {
                 o
             };
+            // a third have a beam sphere of their own, in the same space as
+            // their sphere (a posed object's is left to its pose)
+            let o = if !avatar && rand(3) == 0 {
+                CullObject {
+                    beam: [
+                        rand(200) as f32 - 100.0,
+                        rand(200) as f32 - 100.0,
+                        rand(40) as f32 - 20.0,
+                        0.1 + rand(50) as f32 * 0.1,
+                    ],
+                    ..o
+                }
+            } else {
+                o
+            };
             let o = if i < 32 {
                 CullObject {
                     sphere: [0.0, i as f32 * 0.1, 0.0, 2.0],
@@ -2695,6 +2880,23 @@ mod tests {
                 .zip(&spheres)
                 .any(|(o, s)| o.flags & object_flags::POSED != 0 && s.1 != 3.0),
             "some object is posed"
+        );
+        let beams = world_beams(&objects, &palettes, &spheres);
+        assert!(
+            objects
+                .iter()
+                .zip(&beams)
+                .zip(&spheres)
+                .any(|((o, b), s)| o.beam[3] > 0.0 && o.flags & object_flags::POSED == 0 && b != s),
+            "some object has a beam sphere other than its camera sphere"
+        );
+        assert!(
+            objects
+                .iter()
+                .zip(&beams)
+                .zip(&spheres)
+                .all(|((o, b), s)| (o.beam[3] > 0.0 && o.flags & object_flags::POSED == 0) || b == s),
+            "an object without a beam sphere, or a posed one, has its camera sphere"
         );
         let n_faces = 70_000usize;
         let mut faces: Vec<CullFace> = (0..n_faces)
@@ -2768,8 +2970,10 @@ mod tests {
         }
         // caster volumes: the east half in the second cascade, a slanted slab in the third
         frame.shadow_planes[1][0] = [-1.0, 0.0, 0.0, 5.0];
-        frame.shadow_planes[2][3] = [0.6, 0.0, 0.8, 10.0];
-        frame.shadow_planes[2][SHADOW_PLANES - 1] = [-0.6, 0.0, -0.8, 30.0];
+        // (binary fractions: a sphere exactly on a plane then rounds the same
+        // on the GPU, which may fuse the multiply and the add, as on the CPU)
+        frame.shadow_planes[2][3] = [0.75, 0.0, 0.5, 10.0];
+        frame.shadow_planes[2][SHADOW_PLANES - 1] = [-0.75, 0.0, -0.5, 30.0];
         // merged cascades: squares of 8, 32 and 64 m, the opaque casters
         // of a finer one left out of the next. Binary scales keep a sphere
         // exactly on a plane from rounding to opposite sides on CPU/GPU.
@@ -2833,9 +3037,17 @@ mod tests {
         // a face past the index buffer is counted once and its triangles left out
         let fits = |i: usize| !bound_index_range(faces[i].first_index, faces[i].index_count, 200_000).2;
         let mut expect: Vec<Vec<u32>> = vec![Vec::new(); BINS];
-        let (mut visible, mut tris, mut clamped_faces) = (0, 0, 0);
+        let (mut visible, mut tris, mut clamped_faces, mut beam_differs) = (0, 0, 0, 0u32);
         for i in 0..n_faces {
-            let (m, v) = face_bins(&f, &faces, &objects, &spheres, i);
+            let (m, v) = face_bins(&f, &faces, &objects, &spheres, &beams, i);
+            // only the projectors' bins read the beam sphere (the shelter map's
+            // is the camera's): every other bin and the visible flag are the
+            // camera's
+            let (camera, vc) = face_bins(&f, &faces, &objects, &spheres, &spheres, i);
+            let shelter_bin = BIN_SPOT + (f.groups[3] as usize).min(SPOT_SHADOWS - 1);
+            let projector_bits = ((1u32 << SPOT_SHADOWS) - 1) << BIN_SPOT & !(1 << shelter_bin);
+            assert_eq!((m & !projector_bits, v), (camera & !projector_bits, vc), "face {i}");
+            beam_differs += ((m ^ camera) & projector_bits != 0) as u32;
             visible += v as u32;
             clamped_faces += (m != 0 && !fits(i)) as u32;
             for (b, e) in expect.iter_mut().enumerate() {
@@ -2847,6 +3059,10 @@ mod tests {
                 }
             }
         }
+        assert!(
+            beam_differs > 100,
+            "the beam spheres change the projector bins ({beam_differs} faces)"
+        );
         assert!(expect.iter().take(MAIN_BINS + 3).all(|e| !e.is_empty()), "every bin used");
         assert!(
             expect[BIN_SPOT..BIN_SPOT + SPOT_SHADOWS - 1].iter().all(|e| !e.is_empty()),

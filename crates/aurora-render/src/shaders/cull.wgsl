@@ -134,6 +134,9 @@ struct CullObject {
     // bounding sphere (avatars: their posed body), in the world or in the
     // space of `anchor`
     sphere: vec4<f32>,
+    // the sphere the projectors' maps take it with, in the same space
+    // (radius 0: `sphere`'s); only the projector bins read it
+    beam: vec4<f32>,
     flags: u32,
     // avatar whose state applies (itself, or the wearer), or none
     avatar: u32,
@@ -223,8 +226,15 @@ struct OcclParams {
 @group(0) @binding(10) var<storage, read> palettes: array<mat4x4<f32>>;
 @group(0) @binding(11) var<storage, read> skin_binds: array<SkinBind>;
 @group(0) @binding(12) var<storage, read> joint_boxes: array<JointBox>;
-// world sphere of each object this frame (cs_spheres)
+// world sphere of each object this frame (cs_spheres), then, from
+// sphere_slots(), the sphere the projectors' maps take each with
 @group(0) @binding(13) var<storage, read_write> spheres: array<vec4<f32>>;
+
+// Objects the spheres buffer has room for: its first half holds their
+// camera spheres, its second their beam spheres.
+fn sphere_slots() -> u32 {
+    return arrayLength(&spheres) / 2u;
+}
 
 // World bounding sphere of an object (kept line for line with
 // CullObject::world_sphere). A worn object's follows its anchor (a rigid
@@ -281,11 +291,26 @@ fn world_sphere(o: CullObject) -> vec4<f32> {
     return rest;
 }
 
+// The sphere the projectors' maps take an object with (kept line for line
+// with CullObject::world_beam): its beam sphere placed like `sphere`, or
+// `camera` (its world sphere) when it has none or is posed.
+fn world_beam(o: CullObject, camera: vec4<f32>) -> vec4<f32> {
+    if (o.beam.w <= 0.0 || (o.flags & OBJ_POSED) != 0u) {
+        return camera;
+    }
+    if (o.anchor == 0u || o.anchor > arrayLength(&palettes)) {
+        return o.beam;
+    }
+    return vec4<f32>((palettes[o.anchor - 1u] * vec4<f32>(o.beam.xyz, 1.0)).xyz, o.beam.w);
+}
+
 @compute @workgroup_size(64)
 fn cs_spheres(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    if (i < frame.sizes.y && i < arrayLength(&spheres)) {
-        spheres[i] = world_sphere(objects[i]);
+    if (i < frame.sizes.y && i < sphere_slots()) {
+        let camera = world_sphere(objects[i]);
+        spheres[i] = camera;
+        spheres[sphere_slots() + i] = world_beam(objects[i], camera);
     }
 }
 
@@ -500,14 +525,21 @@ fn face_mask(i: u32) -> u32 {
                 continue;
             }
             // the shelter map takes what `shelters` kept (large, in its
-            // square) that stands still; a projector's, what its beam resolves
+            // square) that stands still, by the camera's sphere; a projector's,
+            // what its beam resolves, by the beam sphere
             var takes = false;
+            var tc = c;
+            var tr = r;
             if ((shelter_bit >> 16u) == (1u << k)) {
                 takes = shelters && !moves;
             } else {
-                takes = spot_caster && spot_resolves(k, c, r);
+                // (the beam sphere: no level of detail of the camera moves it)
+                let beam = spheres[sphere_slots() + f.object];
+                tc = beam.xyz;
+                tr = beam.w;
+                takes = spot_caster && spot_resolves(k, tc, tr);
             }
-            if (takes && spot_in(k, c, r)) {
+            if (takes && spot_in(k, tc, tr)) {
                 m |= 1u << (BIN_SPOT + k);
             }
         }
