@@ -1793,8 +1793,6 @@ impl FrameTarget {
     }
 }
 
-/// The passes of a frame and all they own. Lives on the render thread, or
-/// in the `Renderer` itself with AURORA_RENDER_THREAD=0.
 /// What the stochastic transparency is made from the first frame it is on
 /// (`Backend::ensure_st`).
 struct StInit {
@@ -1807,6 +1805,8 @@ struct StInit {
     scene_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>>,
 }
 
+/// The passes of a frame and all they own. Lives on the render thread, or
+/// in the `Renderer` itself with AURORA_RENDER_THREAD=0.
 pub(crate) struct Backend {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -1880,7 +1880,7 @@ pub(crate) struct Backend {
     /// frame the method is on, with its pipelines for the scene's samples.
     st: Option<crate::oit_stochastic::Stochastic>,
     st_pipes: Option<crate::oit_stochastic::Pipes>,
-    /// What `make_st` needs that the Backend does not keep.
+    /// What `ensure_st` needs that the Backend does not keep.
     st_init: StInit,
     ssao: Ssao,
     gtao: crate::gtao::Gtao,
@@ -3922,7 +3922,7 @@ impl Backend {
         let settings = RenderSettings::default();
         let bloom = crate::bloom::Bloom::new(&device, &post_layout);
         // what the stochastic transparency is made from, the first frame the
-        // method is on (`make_st`): nothing of it exists before
+        // method is on (`ensure_st`): nothing of it exists before
         let st_init = {
             // the stochastic passes' own sample count (oit_stochastic.rs
             // `pass_samples`): the colour, depth and transmittance (R16Float)
@@ -4535,7 +4535,7 @@ impl Backend {
         ssr: bool,
     ) -> Pipelines {
         // (without the stochastic transparency's passes: its own module,
-        // `make_st`, when the method is first on)
+        // `ensure_st`, when the method is first on)
         let src = format!(
             "{}\n{}\n{}",
             crate::common_shader_source(),
@@ -10319,6 +10319,15 @@ impl Backend {
         } else {
             Vec::new()
         };
+        // the stochastic setting takes the blended faces (the scene hands
+        // out the sorted lists, whatever the frame): the exact order's fronts
+        // and pool, from a frame drawn with it before, are let go before the
+        // method's targets are made, so that both never stand together, and
+        // also when the method cannot draw this frame (made again on first
+        // use, as after a resize)
+        if method == crate::oit_stochastic::Method::Stochastic && self.targets.blend_exact.take().is_some() {
+            log::info!("blend order: the fronts of the exact order are let go, stochastic transparency is on");
+        }
         let st_on = want_st && {
             let size = self.targets.depth_ss_tex.size();
             let samples = self.targets.depth_msaa_tex.as_ref().map_or(1, |t| t.sample_count());
@@ -10361,17 +10370,11 @@ impl Backend {
                 s.unused_frame();
             }
         }
-        // the stochastic method takes the blended faces: the exact order's
-        // fronts and pool, from a frame drawn with it before, are let go (made
-        // again on first use, as after a resize)
-        if st_on && self.targets.blend_exact.take().is_some() {
-            log::info!("blend order: the fronts of the exact order are let go, stochastic transparency draws");
-        }
         // every blended face in the true order of its fragments
         // (blend_exact.rs), in passes of their own like the rigged ones
         // (not with MSAA yet: the pass of the blended faces has targets of
         // its own, of one sample), and never in a frame the stochastic method
-        // draws (it takes the blended faces: `blend_order::stochastic`)
+        // draws (it takes the blended faces: `scene::blend_order::set_stochastic`)
         let exact = self
             .targets
             .blend_exact
