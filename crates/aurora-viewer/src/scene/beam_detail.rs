@@ -241,7 +241,7 @@ pub fn apply(faces: &mut [FaceDraw], geom: Option<&GpuGeom>) {
 mod tests {
     use super::*;
     use aurora_render::arena::MeshAlloc;
-    use glam::Quat;
+    use glam::{Mat4, Quat};
     use uuid::Uuid;
 
     /// A projector at `pos` pointing down (a prim's -Z), 60 degrees, reach 20 m.
@@ -253,6 +253,41 @@ mod tests {
         let mut b = Beams::default();
         b.set(1024, ps.iter().copied().enumerate());
         b
+    }
+
+    #[test]
+    fn the_beam_level_and_floor_do_not_change_with_the_level_of_detail_bounds() {
+        use super::super::sync_plan::BoxPoints;
+        let beams = beams(&[projector(Vec3::new(0.0, 0.0, 3.0))]);
+        let world_model = Mat4::from_scale_rotation_translation(Vec3::splat(2.0), Quat::IDENTITY, Vec3::new(0.0, 0.0, -2.0));
+        // two levels of one shape: other bounds, so other centres
+        let coarse = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.3), Vec3::splat(0.5));
+        let fine = BoxPoints::of(&world_model, &world_model, Vec3::splat(-0.5), Vec3::splat(0.5));
+        assert!(coarse.center.distance(fine.center) > 0.1);
+        let radius = 1.7;
+        let level = beams.level(fine.origin, radius, 1.0);
+        assert!(level.is_some(), "the object stands in the beam");
+        assert_eq!(beams.level(coarse.origin, radius, 1.0), level);
+        let texels = beams.texels(fine.origin, radius, 1.0);
+        assert!(texels.is_some());
+        assert_eq!(beams.texels(coarse.origin, radius, 1.0), texels);
+    }
+
+    #[test]
+    fn an_anchored_origin_follows_its_anchor_like_its_centre() {
+        let mut g = ObjGpu {
+            local_center: Vec3::new(0.1, 0.2, 0.3),
+            local_origin: Vec3::new(0.0, 0.0, 0.5),
+            ..Default::default()
+        };
+        let at = Mat4::from_rotation_translation(Quat::from_rotation_z(1.2), Vec3::new(5.0, 6.0, 7.0));
+        g.follow_anchor(&at);
+        assert!(g.center.distance(at.transform_point3(Vec3::new(0.1, 0.2, 0.3))) < 1e-5);
+        assert!(g.origin.distance(at.transform_point3(Vec3::new(0.0, 0.0, 0.5))) < 1e-5);
+        // the anchor moves: both follow, the distance between them stays
+        let gap = g.center.distance(g.origin);
+        g.follow_anchor(&Mat4::from_translation(Vec3::new(-9.0, 2.0, 1.0)));
+        assert!((g.center.distance(g.origin) - gap).abs() < 1e-5);
     }
 
     #[test]

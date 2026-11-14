@@ -435,6 +435,11 @@ pub struct ObjGpu {
     pub shadow_geom: Option<GeomKey>,
     pub lod: u8,
     pub center: Vec3,
+    /// The origin of the geometry's space (the centre of its unit box),
+    /// placed like `center`; unlike it, no level of detail moves it, so the
+    /// projectors' shadow level reads it (beam_detail.rs). A rigged mesh,
+    /// an avatar or a HUD: equal to `center`.
+    pub origin: Vec3,
     pub radius: f32,
     pub tex_generation: u64,
     /// Avatars: bake slots used by worn attachments (bakes on mesh), whose
@@ -493,6 +498,8 @@ pub struct ObjGpu {
     /// Anchored: `center` in the anchor's space (`center` itself is brought
     /// up to date from the anchor at each frame).
     pub local_center: Vec3,
+    /// Anchored: `origin` in the anchor's space.
+    pub local_origin: Vec3,
     /// Anchored rigged mesh: what the GPU poses its bounds from.
     pub posed: Option<anchors::Posed>,
     /// Anchored rigged mesh: sphere of its skeleton this frame, which the
@@ -502,6 +509,13 @@ pub struct ObjGpu {
 }
 
 impl ObjGpu {
+    /// Bring `center` and `origin` up to date from the anchor's matrix
+    /// (anchors.rs), the way the sync placed them.
+    pub fn follow_anchor(&mut self, anchor: &Mat4) {
+        self.center = anchor.transform_point3(self.local_center);
+        self.origin = anchor.transform_point3(self.local_origin);
+    }
+
     /// Its wanted geometry is bound, or the sphere placeholder stands in
     /// for a sculpt whose map is missing (nothing more is coming).
     pub fn geometry_built(&self) -> bool {
@@ -3519,9 +3533,11 @@ impl Scene {
             }
         }
         g.center = m.center;
+        g.origin = m.origin;
         g.radius = m.radius;
         g.anchor = m.anchor;
         g.local_center = m.local_center;
+        g.local_origin = m.local_origin;
         if m.changed {
             if let Some(still) = &mut self.still
                 && !g.hud
@@ -3898,6 +3914,7 @@ impl Scene {
             // brings it back when its geometry can progress.
             let g = &mut self.gpu[idx];
             g.center = pos;
+            g.origin = pos;
             g.radius = radius;
             g.anchor = None;
             g.posed = None;
@@ -3918,11 +3935,13 @@ impl Scene {
         let Placement {
             model,
             center,
+            origin,
             radius,
             rigged,
             skeleton_owner,
             anchor,
             local_center,
+            local_origin,
             posed_rest,
         } = self
             .sync_ctx(world, &renderer.records, view.eye, now)
@@ -3992,9 +4011,11 @@ impl Scene {
         });
         let g = &mut self.gpu[idx];
         g.center = center;
+        g.origin = origin;
         g.radius = radius;
         g.anchor = anchor;
         g.local_center = local_center;
+        g.local_origin = local_origin;
         g.posed = posed;
         g.wide = g.wide.filter(|_| posed.is_some());
         g.rigged = rigged;
@@ -4078,7 +4099,7 @@ impl Scene {
                 let Some(o) = world.objects.get(idx) else {
                     continue;
                 };
-                if !self.beams.holding(g.center, beam_detail::radius_of(o, now)).any(|s| s == slot) {
+                if !self.beams.holding(g.origin, beam_detail::radius_of(o, now)).any(|s| s == slot) {
                     continue;
                 }
                 n += 1;
@@ -4110,7 +4131,7 @@ impl Scene {
         if self.beams.is_empty() && held.is_none() {
             return;
         }
-        // The sphere the projectors test and size the object by: its place
+        // The sphere the projectors test and size the object by: its origin
         // and its scale, never the bounds of the geometry it is drawn with
         // (they change with the camera's level of detail).
         let radius = world.objects.get(idx).map_or(g.radius, |o| beam_detail::radius_of(o, now));
@@ -4122,7 +4143,7 @@ impl Scene {
                 .iter()
                 .filter(|f| beam_detail::alpha_tested(f.pass, blend_casts) && !f.tex_id.is_nil())
             {
-                if let Some(px) = self.beams.texels(g.center, radius, f.repeats) {
+                if let Some(px) = self.beams.texels(g.origin, radius, f.repeats) {
                     self.textures.note_usage_beam(&f.tex_id, px);
                 }
             }
@@ -4130,7 +4151,7 @@ impl Scene {
         let camera = g.geom.filter(|_| beam_detail::eligible(g) && !g.faces.is_empty());
         let desired = camera
             .and_then(|cam| {
-                let level = self.beams.level(g.center, radius, self.lod_factor)?;
+                let level = self.beams.level(g.origin, radius, self.lod_factor)?;
                 beam_detail::shadow_key(cam, level)
             })
             .filter(|k| Some(*k) != camera);
@@ -4912,6 +4933,7 @@ impl Scene {
         let posed = self.posed_avatar_sphere(o.full_id, palette, system_binds, avatar_model, pos);
         let g = &mut self.gpu[idx];
         g.center = pos;
+        g.origin = pos;
         g.radius = 1.2;
         g.posed_sphere = posed;
     }
