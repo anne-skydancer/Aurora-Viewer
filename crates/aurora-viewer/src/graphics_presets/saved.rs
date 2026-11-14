@@ -43,6 +43,7 @@ quality_fields! {
     water_effects: crate::settings::WaterEffectsSettings,
     specular_aa: bool,
     colored_sky_ambient: bool,
+    shadow_alpha: crate::settings::ShadowAlpha,
     tonemapper: u8,
     tonemap_mix: f32,
     dof: crate::dof::Settings,

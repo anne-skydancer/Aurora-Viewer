@@ -1937,6 +1937,12 @@ pub(crate) struct Backend {
     probe_shadow_group: wgpu::BindGroup,
     shadow_buffers: Vec<wgpu::Buffer>,
     shadow_bind_groups: Vec<wgpu::BindGroup>,
+    /// The Aurora caster's parameters of each shadow map (`ShadowStU`, one
+    /// per cascade then per projector map) and of the probe's, which stays
+    /// zero: probes cast Legacy (shadow_alpha.rs).
+    shadow_st_buffers: Vec<wgpu::Buffer>,
+    /// The Aurora caster's pipeline, built on first use (shadow_alpha.rs).
+    shadow_alpha: crate::shadow_alpha::AuroraCaster,
     shadow_size: u32,
     /// The shadow atlas's real size in texels (the shed one is small).
     shadow_dims: (u32, u32),
@@ -2690,6 +2696,46 @@ fn rain_constants() -> &'static [(&'static str, f64)] {
     })
 }
 
+/// The shadow maps' casters: `vs_shadow` and a fragment entry, no culling,
+/// depth only.
+fn shadow_desc(label: &'static str, fs: Option<&'static str>) -> PipeDesc<'static> {
+    PipeDesc {
+        label,
+        vs: "vs_shadow",
+        fs,
+        vb: Vb::Mesh,
+        cull: None,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+        depth_write: true,
+        depth_compare: wgpu::CompareFunction::LessEqual,
+        a2c: false,
+        samples: 1,
+        format: None,
+        gbuf: false,
+        depth_format: Some(SHADOW_FORMAT),
+        depth_bias: wgpu::DepthBiasState {
+            constant: 2,
+            // (the merge of two cascades makes up for it: shadow_merge.rs)
+            slope_scale: crate::shadow_cull::SLOPE_BIAS,
+            clamp: 0.0,
+        },
+        constants: &[],
+        polygon_line: false,
+        unclipped_depth: false,
+    }
+}
+
+/// The Aurora semi-transparent caster (shadow_alpha.rs): `shadow`'s state
+/// with `fs_shadow_aurora` of its own module.
+pub(crate) fn shadow_alpha_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+) -> wgpu::RenderPipeline {
+    make_pipeline(device, module, layout, shadow_desc("shadow alpha aurora", Some("fs_shadow_aurora")))
+}
+
 fn make_pipeline(device: &wgpu::Device, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, d: PipeDesc) -> wgpu::RenderPipeline {
     let mesh_bufs = [Some(vertex_layout()), Some(skin_layout())];
     // (slot 2: the particle buffer is bound once for the whole pass, the
@@ -2839,6 +2885,9 @@ pub(crate) fn shadow_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            // the Aurora caster's per-map parameters (shadow_alpha.rs); the
+            // Legacy pipelines leave it alone
+            uniform_entry(2, wgpu::ShaderStages::FRAGMENT),
         ],
     })
 }
@@ -2847,6 +2896,7 @@ pub(crate) fn shadow_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     buffer: &wgpu::Buffer,
+    st: &wgpu::Buffer,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2860,6 +2910,10 @@ pub(crate) fn shadow_bind_group(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: st.as_entire_binding(),
             },
         ],
     })
@@ -4008,9 +4062,19 @@ impl Backend {
                 })
             })
             .collect();
+        let st_buffer = |label| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: std::mem::size_of::<crate::shadow_alpha::ShadowStU>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let shadow_st_buffers: Vec<wgpu::Buffer> = (0..CASCADES + SPOT_SHADOWS).map(|_| st_buffer("shadow st")).collect();
         let shadow_bind_groups = shadow_buffers
             .iter()
-            .map(|b| shadow_bind_group(&device, &shadow_layout, b, &lin_clamp))
+            .zip(&shadow_st_buffers)
+            .map(|(b, st)| shadow_bind_group(&device, &shadow_layout, b, st, &lin_clamp))
             .collect();
         let probe_shadow_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("probe shadow vp"),
@@ -4018,7 +4082,8 @@ impl Backend {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let probe_shadow_group = shadow_bind_group(&device, &shadow_layout, &probe_shadow_buffer, &lin_clamp);
+        let probe_st_buffer = st_buffer("probe shadow st");
+        let probe_shadow_group = shadow_bind_group(&device, &shadow_layout, &probe_shadow_buffer, &probe_st_buffer, &lin_clamp);
         let records_bind_group = Self::make_records_bg(&device, &records_layout, &scene);
 
         let post_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -4308,6 +4373,8 @@ impl Backend {
             records_key: scene.records_key,
             shadow_view,
             shadow_buffers,
+            shadow_st_buffers,
+            shadow_alpha: crate::shadow_alpha::AuroraCaster::new(),
             probe_shadow_view,
             probe_shadow_vp: Mat4::IDENTITY,
             probe_shadow_buffer,
@@ -5446,32 +5513,6 @@ impl Backend {
         };
         let refl_blend_rigged = pipe(refl_blend_desc("reflection blended rigged", true, wgpu::CompareFunction::Greater));
         let refl_blend = pipe(refl_blend_desc("reflection blended", false, wgpu::CompareFunction::GreaterEqual));
-        let shadow_desc = |label, fs| PipeDesc {
-            label,
-            vs: "vs_shadow",
-            fs,
-            vb: Vb::Mesh,
-            cull: None,
-            blend: None,
-            write_mask: wgpu::ColorWrites::ALL,
-            depth_write: true,
-            depth_compare: wgpu::CompareFunction::LessEqual,
-            a2c: false,
-            samples: 1,
-            format: None,
-            gbuf: false,
-            range: None,
-            depth_format: Some(SHADOW_FORMAT),
-            depth_bias: wgpu::DepthBiasState {
-                constant: 2,
-                // (the merge of two cascades makes up for it: shadow_merge.rs)
-                slope_scale: crate::shadow_cull::SLOPE_BIAS,
-                clamp: 0.0,
-            },
-            constants: &[],
-            polygon_line: false,
-            unclipped_depth: false,
-        };
         let shadow = make_pipeline(device, &module, &shadow_pl, shadow_desc("shadow", Some("fs_shadow")));
         // opaque casters: `fs_shadow` discards nothing of them, so the same
         // vertex shader alone writes the same depth, without a texture read
@@ -6986,7 +7027,7 @@ impl Backend {
 
     // ---------------------------------------------------------------- frame
 
-    fn cascade_matrices(&mut self, f: &FrameParams) -> ([Mat4; CASCADES], [f32; CASCADES]) {
+    fn cascade_matrices(&mut self, f: &FrameParams) -> ([Mat4; CASCADES], [f32; CASCADES], [glam::IVec2; CASCADES]) {
         let far = f.far.min(f.shadow_distance).max(16.0);
         let splits = [far * 0.08, far * 0.3, far];
         // the whole photo's proportions when a frame draws one of its tiles
@@ -7001,6 +7042,8 @@ impl Backend {
         self.cascade_anchors
             .begin(f.photo_tile != Mat4::IDENTITY || self.motion_cut, shadow_anchor_held());
         let mut out = [Mat4::IDENTITY; CASCADES];
+        // the texels each view was translated by (stochastic shadows)
+        let mut snaps = [glam::IVec2::ZERO; CASCADES];
         let mut near = f.near;
         for (i, &split) in splits.iter().enumerate() {
             // frustum slice corners in view space
@@ -7029,9 +7072,16 @@ impl Backend {
             // when the camera crosses a cell.
             let anchor = self.cascade_anchors.pick(i, center, radius, self.shadow_size, light_dir);
             out[i] = cascade_matrix(center, radius, light_dir, anchor, self.shadow_size);
+            // the texels `cascade_matrix` translated its view by, for the
+            // stochastic shadows' world-anchored cells (the same snap, from
+            // the same held anchor)
+            let up = if light_dir.z.abs() > 0.99 { Vec3::Y } else { Vec3::Z };
+            let eye = center - light_dir * (radius + crate::shadow_cull::CASCADE_DEPTH_PAD);
+            let view = glam::camera::rh::view::look_at_mat4(eye, center, up);
+            snaps[i] = crate::shadow_alpha::snap_to_texels(view, anchor, 2.0 * radius / self.shadow_size as f32).1;
             near = split;
         }
-        (out, splits)
+        (out, splits, snaps)
     }
 
     /// Fill the uniform block for a camera (main view or a reflection).
@@ -8143,7 +8193,7 @@ impl Backend {
         let textures = f.tex_anim_at.map_or(effects, |at| self.anim_clock.now(at));
         self.anim_now = [effects[0], effects[1], textures[0], textures[1]];
         self.shadow_path = crate::shadow_cull::current_path();
-        let (cascades, splits) = self.cascade_matrices(f);
+        let (cascades, splits, cascade_snaps) = self.cascade_matrices(f);
         let unjittered_vp = f.proj * f.view;
         let jittered;
         // where the scene's depth has a pixel of the image, in pixels (y down)
@@ -8702,6 +8752,39 @@ impl Backend {
                 kind: [u32::from(shelter_map.is_some_and(|k| i == CASCADES + k)), 0, 0, 0],
             };
             self.queue.write_buffer(&self.shadow_buffers[i], 0, bytemuck::bytes_of(&u));
+        }
+        // stochastic shadows: the Aurora caster once it is built (the
+        // frame draws Legacy until then), with the parameters of each map
+        let aurora_pipe = if f.shadows && crate::shadow_alpha::mode(self.settings.shadow_alpha) == crate::ShadowAlpha::Aurora {
+            self.shadow_alpha
+                .get(&self.device, [&self.records_layout, &self.tex_layout, &self.shadow_layout])
+        } else {
+            None
+        };
+        if aurora_pipe.is_some() {
+            let rotating = self.taa.is_some() && snapshot.is_none() && f.photo_tile == Mat4::IDENTITY && !f.cutout;
+            let (frame_seed, flags) = crate::shadow_alpha::frame_seed(self.frame_index, rotating);
+            let res = self.shadow_size;
+            let origins = (0..CASCADES)
+                .map(|ci| {
+                    Some(crate::shadow_alpha::cascade_origin(
+                        ((ci as u32 % 2) * res, (ci as u32 / 2) * res),
+                        res,
+                        cascade_snaps[ci],
+                    ))
+                })
+                .chain(spot_vp.iter().enumerate().map(|(k, vp)| {
+                    // a projector's map has its own frame: the cells start at its corner
+                    vp.map(|_| {
+                        let (x, y) = crate::projector_shadows::map_origin(res, k);
+                        [x as i32, y as i32]
+                    })
+                }));
+            for (i, origin) in origins.enumerate() {
+                let Some(origin) = origin else { continue };
+                let u = crate::shadow_alpha::ShadowStU { origin, frame_seed, flags };
+                self.queue.write_buffer(&self.shadow_st_buffers[i], 0, bytemuck::bytes_of(&u));
+            }
         }
         // glow passes only when some visible face glows (RenderGlow)
         // (a cut-out photo's alpha holds its coverage instead, cutout.rs)
@@ -9510,7 +9593,11 @@ impl Backend {
                             // is the nearest whatever the order
                             let (pipe, (off, count), bin) = match step {
                                 Opaque(_) => (&self.pipelines.shadow_depth, rg.shadow[ci], BIN_SHADOW + ci),
-                                _ => (&self.pipelines.shadow, rg.shadow_alpha[ci], BIN_SHADOW_ALPHA + ci),
+                                _ => (
+                                    aurora_pipe.as_ref().unwrap_or(&self.pipelines.shadow),
+                                    rg.shadow_alpha[ci],
+                                    BIN_SHADOW_ALPHA + ci,
+                                ),
                             };
                             if count > 0 || gpu_on {
                                 pass.set_pipeline(pipe);
@@ -9563,7 +9650,9 @@ impl Backend {
                                 if count == 0 && !gpu_on {
                                     continue;
                                 }
-                                pass.set_pipeline(&self.pipelines.shadow);
+                                // (a map with a rule of its own in `fs_shadow` keeps
+                                // `pipelines.shadow` here, like the probes)
+                                pass.set_pipeline(aurora_pipe.as_ref().unwrap_or(&self.pipelines.shadow));
                                 if count > 0 {
                                     pass.multi_draw_indexed_indirect(&self.indirect, off, count);
                                     calls.set(calls.get() + 1);

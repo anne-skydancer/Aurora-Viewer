@@ -7,6 +7,15 @@
 //!   0.03, then 0.95; a texture at alpha 0.75 everywhere. As in the Legacy
 //!   Viewer, the shadows are: the frame alone, solid; the frame alone,
 //!   dithered; dithered; none; solid; dithered.
+//! - `alpha`: the stochastic shadows (Settings::shadow_alpha, or
+//!   AURORA_SHADOW_ALPHA=legacy|aurora), in a row 2 m panels lying 1.3 m
+//!   above the ground, left to right: blank panes at face alpha 0.2, 0.5 and
+//!   0.8; two 0.5 panes 0.3 m apart, shifted by half a pane (0.5, then 0.25
+//!   where they overlap, then 0.5 of the light); a greenhouse pane (texture
+//!   alpha 0.5); and a 0.5 sphere (its front and back layers: 0.25 at the
+//!   centre). Legacy: flat dithered shadows, none for the greenhouse panes,
+//!   layers never darker. Aurora: 0.2, 0.5 and 0.8 of the light blocked,
+//!   0.25 of it left under the overlap, the greenhouse panes half dark.
 //! - `dense`: 400 greenhouse panes over a 60 m square ahead, for the cost of
 //!   the blended casters (AURORA_PROFILE, AURORA_BLEND_SHADOWS=0 to compare).
 //!
@@ -22,20 +31,24 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 const FIRST_ID: u32 = 86_000;
-/// Opaque frame bars around four panes at alpha 128.
-const TEX_GREENHOUSE: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0000_0040);
+/// Opaque frame bars around four panes at alpha 128. (Not ..._0040: the HUD
+/// demo's mask panel took that id, and `local_texture` serves it first, so
+/// the pane showed that texture and cast a solid shadow.)
+const TEX_GREENHOUSE: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0000_0042);
 /// Alpha 192 (0.75) everywhere: over the 0.598 cutoff, under 0.88.
 const TEX_ALPHA_75: Uuid = Uuid::from_u128(0xDE40_7E10_0000_0000_0000_0000_0000_0041);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Row,
+    Alpha,
     Dense,
 }
 
 fn mode() -> Option<Mode> {
     match std::env::var("AURORA_DEMO_BLEND_SHADOWS").ok()?.trim() {
         "1" => Some(Mode::Row),
+        "alpha" => Some(Mode::Alpha),
         "dense" => Some(Mode::Dense),
         _ => None,
     }
@@ -91,6 +104,44 @@ pub fn events() -> Vec<NetEvent> {
                 let p = eye + look * 14.0 - across * (4.0 + (k as f32 - 2.5) * 2.4);
                 objects.push(panel(FIRST_ID + k as u32, above(p, 1.3), flat, texture, alpha));
             }
+        }
+        Mode::Alpha => {
+            let at = |slot: f32| eye + look * 14.0 - across * (4.0 + (slot - 4.0) * 2.4);
+            let mut id = FIRST_ID;
+            let mut add = |objects: &mut Vec<ObjectUpdate>, p: Vec3, h: f32, texture: Uuid, alpha: f32| {
+                objects.push(panel(id, above(p, h), flat, texture, alpha));
+                id += 1;
+            };
+            for (k, alpha) in [0.2, 0.5, 0.8].into_iter().enumerate() {
+                add(&mut objects, at(k as f32), 1.3, BLANK_TEXTURE, alpha);
+            }
+            // two 0.5 panes, the upper one shifted by half a pane
+            add(&mut objects, at(3.0) - across * 0.5, 1.3, BLANK_TEXTURE, 0.5);
+            add(&mut objects, at(3.0) + across * 0.5, 1.6, BLANK_TEXTURE, 0.5);
+            add(&mut objects, at(4.5), 1.3, TEX_GREENHOUSE, 1.0);
+            let mut t = TextureEntry::default();
+            for f in t.faces.iter_mut() {
+                f.texture = BLANK_TEXTURE;
+                f.color = [0.85, 0.95, 0.9, 0.5];
+            }
+            let sphere = shape(
+                aurora_prim::params::LL_PCODE_PATH_CIRCLE,
+                aurora_prim::params::LL_PCODE_PROFILE_CIRCLE_HALF,
+                100,
+                0,
+                0,
+            );
+            let p = at(5.5);
+            objects.push(prim(
+                id,
+                Vec3::new(p.x, p.y, height(p.x, p.y) + 1.8),
+                upright,
+                Vec3::splat(1.6),
+                sphere,
+                Arc::new(t),
+                ExtraParams::default(),
+                "",
+            ));
         }
         Mode::Dense => {
             for gy in 0..20 {

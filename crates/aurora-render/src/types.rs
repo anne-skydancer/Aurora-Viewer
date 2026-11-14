@@ -1315,6 +1315,8 @@ pub struct RenderSettings {
     /// screen-space mask drawn once per frame. Off: the shadows are exactly
     /// the ones of before (nothing is created or drawn).
     pub soft_shadows: bool,
+    /// How blended faces cast sun and projector shadows (shadow_alpha.rs).
+    pub shadow_alpha: crate::ShadowAlpha,
     /// Geometric specular anti-aliasing of the objects' highlights
     /// (common.wgsl `specular_aa_roughness`, AURORA_SPECULAR_AA).
     pub specular_aa: bool,
@@ -1367,6 +1369,7 @@ impl Default for RenderSettings {
             screen_indirect_intensity: 1.0,
             contact_shadows: false,
             soft_shadows: false,
+            shadow_alpha: crate::ShadowAlpha::Legacy,
             specular_aa: true,
             water_reflection_scale: 0.25,
             mirror_scale: 0.25,

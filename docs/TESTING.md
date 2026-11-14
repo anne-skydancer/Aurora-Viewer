@@ -5103,7 +5103,7 @@ both open states and the selection count. Capture at frame 620.
 | `AURORA_DEMO_PARTICLE_GLASS=1`, `sparse` or `dense` | Fountains behind, in front of and through three glass panes (one fullbright, one glowing; the emitters show red: the particle-source beacon highlight); 60 spread-out panes and 6 emitters; or 300 thin panes and 36 emitters (the cap of 256 particle runs) |
 | `AURORA_PARTICLE_INTERLEAVE=0` | Particles as before the interleave: all after the blended faces and the overlays, radial sort, not clipped at the water, none of its pipelines or targets made (A/B; read at launch, not live) |
 | `AURORA_DEMO_SOFT_SHADOWS=1`, `near` or `slope` | A pergola, a 14 m pole, a table, a thin post and a sphere on a pale receiving plate in a 35 degree sun, soft shadows on (`near`: at 0.4 of the distance) |
-| `AURORA_DEMO_BLEND_SHADOWS=1` or `dense` | Alpha-blended panels in the sun (greenhouse pane, face and texture alpha), or 400 greenhouse panes |
+| `AURORA_DEMO_BLEND_SHADOWS=1`, `alpha` or `dense` | Alpha-blended panels in the sun (greenhouse pane, face and texture alpha), the stochastic shadows' panes, or 400 greenhouse panes |
 | `AURORA_DEMO_FEET=opaque` or `blend` | A shoe on each foot of our avatar and of the crowd, and two blocks on the ground (contact shadows) |
 | `AURORA_DEMO_LIGHTS=<n>` | Local light load: n small lights in the crowd |
 | `AURORA_DEMO_PROBES=1` | Two manual reflection probes on the plaza: a box and a sphere |
@@ -5448,7 +5448,7 @@ both open states and the selection count. Capture at frame 620.
   in from the contact (a 5 degree sun did that at 0.25 and, at 1, lost the
   post's, the table legs' and the pergola legs' shadows). `slope` adds a
   ramp tilted 35 degrees away from the sun with a second post on it.
-- **`AURORA_DEMO_BLEND_SHADOWS=1|dense`**: alpha-blended prims that cast
+- **`AURORA_DEMO_BLEND_SHADOWS=1|alpha|dense`**: alpha-blended prims that cast
   sun shadows (`demo_blend_shadows.rs`), best from
   `AURORA_DEMO_POS="80,100"`. `1`: six 2 m panels lying 1.3 m above the
   ground, 14 m along the start view and to its right (clear of the
@@ -5460,9 +5460,21 @@ both open states and the selection count. Capture at frame 620.
   Viewer's rules, `fs_shadow` in `object.wgsl`). The classic sun lights
   with `min(n·l, shadow)` as the Legacy Viewer does, so a dithered shadow
   barely darkens ground the sun already lights at a slant: see the
-  dithered ones with `AURORA_DEBUG_SHADOWS=1`. `dense`: 400 upright
+  dithered ones with `AURORA_DEBUG_SHADOWS=1`. `alpha`: the semi-transparent
+  shadows (Graphics › Shadows, or `AURORA_SHADOW_ALPHA`), six objects in a
+  row 1.3 m above the ground, left to right: blank panes at face alpha 0.2,
+  0.5 and 0.8; two 0.5 panes 0.3 m apart and shifted by half a pane; a
+  greenhouse pane (texture alpha 0.5); a sphere at alpha 0.5. Legacy: flat
+  dithered shadows (none under 5 % opacity, none for the greenhouse panes),
+  and no darker under the two panes. Aurora: the shadows block 0.2, 0.5 and
+  0.8 of the light, the pair 0.5, 0.25 where they overlap and 0.5, the
+  greenhouse panes half dark between their bars, the sphere darker in the
+  middle. Compare with `AURORA_SHADOW_ALPHA=legacy` and `=aurora`, and under
+  SMAA then TAA: the shadow's grain (fine, a 2 × 2 texel block) is the cost
+  of the proportion up close without soft shadows or TAA. `dense`: 400 upright
   greenhouse panes over a 60 m square ahead, for the cost of the blended
-  casters (`AURORA_PROFILE=1`, with `AURORA_BLEND_SHADOWS=0` to compare).
+  casters (`AURORA_PROFILE=1`, with `AURORA_BLEND_SHADOWS=0` to compare, and
+  `AURORA_SHADOW_ALPHA=legacy|aurora` for the shadow pass).
 - **`AURORA_DEMO_FEET=opaque|blend`**: our avatar and each avatar of
   `AURORA_DEMO_CROWD` wear a box on each foot's attachment point, opaque or
   blended (color alpha 0.95: the many mesh bodies and shoes whose faces
@@ -11641,6 +11653,7 @@ What the inventory must show with these scenarios:
 | `AURORA_SHADOW_BIAS=legacy\|new\|alt` | Shadow receiver bias of before (stairs on avatars' backs), or one second in two |
 | `AURORA_SHADOW_ANCHOR=old` | The sun's texel grids anchored on the cascades' centres every frame, as before (far shadow edges hop as the camera turns), to compare |
 | `AURORA_BLEND_SHADOWS=0` | Alpha-blended faces that are not rigged cast no shadow, as before |
+| `AURORA_SHADOW_ALPHA=legacy\|aurora` | Stochastic shadows forced to one rule, whatever the setting |
 | `AURORA_DEBUG_SHADOWS=1` | Shadow view: the cascade each pixel reads, and its shadow |
 | `AURORA_PROFILE=1` | Profiling in the log (see [Profiling](#profiling)) |
 | `AURORA_FOOT_IK_SCOPE=<mode>` | Offline foot-placement benchmark override (all or visible10) |
@@ -12940,6 +12953,17 @@ What the inventory must show with these scenarios:
   `AURORA_DEBUG_SHADOWS=1`: the edge of the torus's shadow across the
   "Normal + specular" panel is a row of dots with `mapped`, and the shadow
   of our avatar on the plaza has several parallel edges with `gaps`.
+
+- **`AURORA_SHADOW_ALPHA=legacy|aurora`**: how blended faces cast the sun
+  and projector shadows (`shadow_alpha.rs`), whatever Graphics › Shadows
+  says. `legacy`: the Legacy Viewer's rule (`fs_shadow`): none under 5 %
+  opacity, every other texel column under 88 %, none for a window pane
+  (texture alpha under 0.598), layers never darker. `aurora`: in proportion
+  to the opacity, with a stochastic coverage of 2 × 2 texel blocks fixed in
+  the world for the cascades; two layers of 0.5 leave 0.25 of the light;
+  the pipeline is built on a worker thread at the first Aurora frame (the
+  log says how long it took, and Legacy is drawn meanwhile); the reflection
+  probes' shadows stay Legacy. See `AURORA_DEMO_BLEND_SHADOWS=alpha`.
 
 - **`AURORA_SHADOW_BIAS=legacy|new|alt`**: the receiver bias of the sun
   shadow lookup (`cascade_shadow` in `common.wgsl`). `legacy`: a fixed 0.0005
