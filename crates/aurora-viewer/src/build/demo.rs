@@ -18,6 +18,8 @@
 //!   faces-mapping: one face on each of three textured surfaces (repeats,
 //!   offset and rotation; planar mapping; a PBR base color transform), for
 //!   the face-select pattern.
+//!   `,no-highlight` after any faces-* name turns "Show highlight" off at
+//!   frame 215 (faces-mapping,object:99620,no-highlight).
 //!   faces-texgen: frames A closely, selects a side face at 625, then
 //!   switches its mapping Default <-> Planar at 655 with the Texture tab's
 //!   edit (capture at 650 and 690).
@@ -77,6 +79,8 @@ pub enum Step {
     TexturePicker(super::ui::PickTarget, bool),
     BomPicker(Option<usize>),
     CloseView,
+    /// "Show highlight" (RenderHighlightSelections) on or off.
+    Highlight(bool),
     /// The selected faces' mapping switched Default <-> Planar, as the
     /// Texture tab's Mapping control does.
     TexGenToggle,
@@ -562,7 +566,14 @@ pub fn steps(spec: &str, frame: u64, tool: &BuildTool, world: &World, s: &BuildS
                 .collect()
         };
         return match frame {
-            215 => vec![Step::Open(Tool::Edit, EditMode::Face, 6), Step::Linked(false)],
+            215 => {
+                let mut steps = vec![Step::Open(Tool::Edit, EditMode::Face, 6), Step::Linked(false)];
+                // `,no-highlight`: "Show highlight" off, the halo hidden
+                if parts.contains(&"no-highlight") {
+                    steps.push(Step::Highlight(false));
+                }
+                steps
+            }
             220 => object.into_iter().map(Step::Select).collect(),
             227 => vec![Step::Focus(false)],
             235 if matches!(parts[0], "faces-close" | "faces-complex" | "faces-texgen") || parts[0].starts_with("faces-picker") => {
