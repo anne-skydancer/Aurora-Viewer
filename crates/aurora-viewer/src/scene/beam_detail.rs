@@ -255,12 +255,6 @@ mod tests {
         b
     }
 
-    /// Small deterministic generator for the camera samples.
-    fn rng(seed: &mut u32) -> f32 {
-        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        (*seed >> 8) as f32 / (1u32 << 24) as f32
-    }
-
     #[test]
     fn the_level_reads_the_object_and_the_projectors_only() {
         // `Beams::level` takes no camera; what could leak it in is the
