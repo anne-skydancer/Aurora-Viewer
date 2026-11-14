@@ -1532,8 +1532,17 @@ impl Scene {
             return;
         }
         self.selection_changed = Some(Instant::now());
-        for &idx in self.selection_faces.keys().chain(selected.keys()) {
-            let changed = self.selection_faces.get(&idx).copied().unwrap_or(0) ^ selected.get(&idx).copied().unwrap_or(0);
+        Self::rebuild_invisible_picks(world, &self.selection_faces, &selected);
+        self.selection_faces = selected;
+    }
+
+    /// Marks for a rebuild the objects whose set of picked faces changed on
+    /// a fully transparent face: its record exists only while a pick holds
+    /// it, so a placement update alone cannot restore or drop it. Shared by
+    /// the halo's faces and the face-select pattern's.
+    pub(super) fn rebuild_invisible_picks(world: &mut World, old: &HashMap<usize, u64>, new: &HashMap<usize, u64>) {
+        for &idx in old.keys().chain(new.keys()) {
+            let changed = old.get(&idx).copied().unwrap_or(0) ^ new.get(&idx).copied().unwrap_or(0);
             let invisible = changed != 0
                 && world.objects.get(idx).is_some_and(|object| {
                     (0..aurora_prim::te::MAX_TES)
@@ -1546,7 +1555,18 @@ impl Scene {
                 object.render.needs_records = true;
             }
         }
-        self.selection_faces = selected;
+    }
+
+    /// Whether object `idx` holds a picked face, for the halo or for the
+    /// face-select pattern (the pattern shows with "Show highlight" off).
+    pub(super) fn has_picks(&self, idx: usize) -> bool {
+        self.selection_faces.contains_key(&idx) || self.pattern_faces.contains_key(&idx)
+    }
+
+    /// The faces of object `idx` that need a record even when fully
+    /// transparent: the halo's and the pattern's.
+    pub(super) fn picked_faces(&self, idx: usize) -> u64 {
+        self.selection_faces.get(&idx).copied().unwrap_or(0) | self.pattern_faces.get(&idx).copied().unwrap_or(0)
     }
 
     pub fn reveal_selected_faces(&mut self) {
@@ -4024,7 +4044,7 @@ impl Scene {
             _ => None,
         };
         let hud_zoom = if g.hud { world.hud_scale(idx) } else { 1.0 };
-        let selected_faces = self.selection_faces.get(&idx).copied().unwrap_or(0);
+        let selected_faces = self.picked_faces(idx);
         // a Linden plant: its species texture, alpha-tested at 0.5, whatever
         // its texture entry says
         let plant = plants::plant_face(o);
@@ -4943,7 +4963,7 @@ impl Scene {
                         || bits & list_index::SPECIAL != 0
                         || debug
                         || selection.contains_key(&i)
-                        || self.selection_faces.contains_key(&i)
+                        || self.has_picks(i)
                         || self.photo_marks.contains(&i)
                         || self.give_marks.1.contains(&i)
                         || self.beacon_highlights.contains(&i)
@@ -4963,7 +4983,7 @@ impl Scene {
                         || g.special
                         || debug
                         || selection.contains_key(&i)
-                        || self.selection_faces.contains_key(&i)
+                        || self.has_picks(i)
                         || self.photo_marks.contains(&i)
                         || self.give_marks.1.contains(&i)
                         || self.beacon_highlights.contains(&i)
@@ -7864,6 +7884,64 @@ mod tests {
         assert!(!world.objects.get(idx).unwrap().render.needs_records);
         scene.set_face_selection(&mut world, HashMap::new());
         assert!(world.objects.get(idx).unwrap().render.needs_records);
+    }
+
+    /// With "Show highlight" off the halo's faces are empty and the picked
+    /// faces alone are set (`face_picks`): the object stays visited every
+    /// frame, so the pattern does not blink with the usage frames.
+    #[test]
+    fn pattern_picks_alone_keep_an_object_visited() {
+        let lib = Arc::new(AvatarLibrary::load());
+        let mut world = World::new(lib.clone());
+        let mut scene = Scene::new(Default::default(), lib);
+        assert!(!scene.has_picks(7), "nothing picked: no extra visit");
+        scene.set_face_pattern(&mut world, &HashMap::from([(7, 1 << 3)]));
+        assert!(scene.selection_faces.is_empty());
+        assert!(scene.has_picks(7));
+        assert!(!scene.has_picks(8), "another object");
+        assert_eq!(scene.picked_faces(7), 1 << 3);
+        // the halo's pulse is not the pattern's to time
+        assert!(scene.selection_changed.is_none());
+        scene.set_face_selection(&mut world, HashMap::from([(7, 1 << 5)]));
+        assert_eq!(scene.picked_faces(7), (1 << 3) | (1 << 5));
+        scene.set_face_pattern(&mut world, &HashMap::new());
+        assert_eq!(scene.picked_faces(7), 1 << 5, "the halo's own face stays");
+        scene.set_face_selection(&mut world, HashMap::new());
+        assert!(!scene.has_picks(7));
+    }
+
+    /// A fully transparent face picked for the pattern alone (highlight off)
+    /// gets its record, and loses it when the pick is cleared.
+    #[test]
+    fn invisible_face_picked_for_the_pattern_alone_gets_and_loses_its_record() {
+        let lib = Arc::new(AvatarLibrary::load());
+        let mut world = World::new(lib.clone());
+        for event in crate::demo::events().into_iter().chain(crate::demo::face_selection_events(false)) {
+            world.apply(event);
+        }
+        let idx = world.objects.index_of_uuid(&crate::demo::action_id(99620)).unwrap();
+        let object = world.objects.get_mut(idx).unwrap();
+        Arc::make_mut(object.te.as_mut().unwrap()).faces[0].color[3] = 0.0;
+        object.render.needs_records = false;
+        object.material_dirty = false;
+        let mut scene = Scene::new(Default::default(), lib);
+        // a visible face: no rebuild
+        scene.set_face_pattern(&mut world, &HashMap::from([(idx, 1 << 1)]));
+        assert!(!world.objects.get(idx).unwrap().render.needs_records);
+        // the invisible face: rebuilt, and the record is no longer skipped
+        scene.set_face_pattern(&mut world, &HashMap::from([(idx, (1 << 1) | 1)]));
+        assert!(world.objects.get(idx).unwrap().render.needs_records);
+        assert!(world.objects.get(idx).unwrap().material_dirty);
+        assert!(scene.selection_faces.is_empty());
+        assert_ne!(scene.picked_faces(idx) & 1, 0, "its record is made");
+        world.objects.get_mut(idx).unwrap().render.needs_records = false;
+        world.objects.get_mut(idx).unwrap().material_dirty = false;
+        scene.set_face_pattern(&mut world, &HashMap::from([(idx, (1 << 1) | 1)]));
+        assert!(!world.objects.get(idx).unwrap().render.needs_records, "unchanged: no rebuild");
+        scene.set_face_pattern(&mut world, &HashMap::new());
+        assert!(world.objects.get(idx).unwrap().render.needs_records, "cleared: the record goes");
+        assert_eq!(scene.picked_faces(idx), 0);
+        assert!(scene.selection_changed.is_none());
     }
 
     #[test]
