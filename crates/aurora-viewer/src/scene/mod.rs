@@ -4149,12 +4149,20 @@ impl Scene {
             }
         }
         let camera = g.geom.filter(|_| beam_detail::eligible(g) && !g.faces.is_empty());
-        let desired = camera
-            .and_then(|cam| {
-                let level = self.beams.level(g.origin, radius, self.lod_factor)?;
-                beam_detail::shadow_key(cam, level)
-            })
-            .filter(|k| Some(*k) != camera);
+        let mut desired = None;
+        if let Some(cam) = camera
+            && let Some(level) = self.beams.level(g.origin, radius, self.lod_factor)
+            && let Some(shadow) = beam_detail::shadow_key(cam, level)
+        {
+            // (a mesh without that level draws another one: compared and
+            // requested by the level it resolves to)
+            match beam_detail::resolve_level(cam, shadow, |id, lod| self.meshes.resolved_lod(id, lod)) {
+                beam_detail::Resolved::Camera => {}
+                beam_detail::Resolved::Key(k) => desired = Some(k),
+                // (the header is not known: the camera's range stands)
+                beam_detail::Resolved::Wait => return,
+            }
+        }
         if desired.is_none() && held.is_none() {
             return;
         }

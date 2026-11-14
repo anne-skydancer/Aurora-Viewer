@@ -221,6 +221,36 @@ pub fn plan(held: Option<GeomKey>, desired: Option<GeomKey>, ready: bool, failed
     }
 }
 
+/// What a wanted shadow geometry comes to once a mesh's missing levels are
+/// resolved the way the build resolves them.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Resolved {
+    /// It draws the block the camera's level draws: the camera's range will do.
+    Camera,
+    /// Request and bind this key.
+    Key(GeomKey),
+    /// The mesh header is not known yet: nothing is asked for, the camera's
+    /// range stands meanwhile.
+    Wait,
+}
+
+/// A mesh asset may hold fewer than four levels: a request for another one
+/// draws the nearest block it has (`MeshHeader::actual_lod`), so two keys
+/// can stand for one geometry. The shadow key is resolved before it is
+/// compared with the camera's, and carries the resolved level, so one block
+/// is one geometry. `resolve(id, lod)` is `MeshStreamer::resolved_lod`.
+pub fn resolve_level(camera: GeomKey, shadow: GeomKey, resolve: impl Fn(&uuid::Uuid, u8) -> Option<u8>) -> Resolved {
+    match (camera, shadow) {
+        (GeomKey::Mesh { id, lod: cam }, GeomKey::Mesh { lod, .. }) => match (resolve(&id, lod), resolve(&id, cam)) {
+            (Some(s), Some(c)) if s == c => Resolved::Camera,
+            (Some(s), Some(_)) => Resolved::Key(GeomKey::Mesh { id, lod: s }),
+            _ => Resolved::Wait,
+        },
+        (cam, shadow) if cam == shadow => Resolved::Camera,
+        (_, shadow) => Resolved::Key(shadow),
+    }
+}
+
 /// The shadow range of the face `te_index` in `geom`: nothing is drawn for a
 /// face this level does not have.
 pub fn range_of(geom: &GpuGeom, te_index: u8) -> (u32, u32, i32) {
@@ -404,6 +434,39 @@ mod tests {
         ] {
             assert!(!eligible(&g));
         }
+    }
+
+    #[test]
+    fn a_missing_mesh_level_resolves_like_the_build_does() {
+        let id = Uuid::from_u128(5);
+        let mesh = |lod| GeomKey::Mesh { id, lod };
+        // an asset with levels 1 and 3 only (`MeshHeader::actual_lod`)
+        let has = [false, true, false, true];
+        let resolve = |_: &Uuid, lod: u8| {
+            let lod = lod.min(3) as usize;
+            if has[lod] {
+                return Some(lod as u8);
+            }
+            (0..lod)
+                .rev()
+                .find(|&i| has[i])
+                .or_else(|| (lod + 1..4).find(|&i| has[i]))
+                .map(|i| i as u8)
+        };
+        // 2 draws level 1's block, so does 0: shadow 0 against camera 2 is the camera's geometry
+        assert_eq!(resolve_level(mesh(2), mesh(0), resolve), Resolved::Camera);
+        assert_eq!(resolve_level(mesh(1), mesh(2), resolve), Resolved::Camera);
+        // another block: its key carries the resolved level
+        assert_eq!(resolve_level(mesh(3), mesh(2), resolve), Resolved::Key(mesh(1)));
+        assert_eq!(resolve_level(mesh(3), mesh(0), resolve), Resolved::Key(mesh(1)));
+        // two requests, one geometry
+        assert_eq!(resolve_level(mesh(3), mesh(2), resolve), resolve_level(mesh(3), mesh(1), resolve));
+        // header unknown: wait
+        assert_eq!(resolve_level(mesh(3), mesh(0), |_, _| None), Resolved::Wait);
+        // not a mesh: the keys compare as they are
+        let prim = |lod| GeomKey::Prim { hash: 4, lod };
+        assert_eq!(resolve_level(prim(3), prim(3), resolve), Resolved::Camera);
+        assert_eq!(resolve_level(prim(3), prim(1), resolve), Resolved::Key(prim(1)));
     }
 
     #[test]
