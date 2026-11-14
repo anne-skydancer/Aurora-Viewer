@@ -721,6 +721,8 @@ impl Session<'_> {
         m.agent_data.agent_id = self.agent_id();
         m.agent_data.session_id = self.session_id();
         self.send_main(&m, true);
+        self.sh.stats.logout_requests.fetch_add(1, Ordering::Relaxed);
+        log::info!("LogoutRequest sent: the region ends the session");
     }
 
     /// `login`: the first region of the session, whose UseCircuitCode has
