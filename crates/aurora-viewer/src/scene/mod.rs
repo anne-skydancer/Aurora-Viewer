@@ -4129,14 +4129,16 @@ impl Scene {
     /// it and a hash of what each is drawn with there (object, level of
     /// detail of its geometry in the map, level of its alpha-tested
     /// textures, the coarser of the level resident and the level the map asks
-    /// for: `beam_detail::hash_level`). It stays the same while nothing in the
-    /// beam moves, whatever the camera does (beam_detail.rs); rigged meshes, avatars and HUDs
-    /// keep the camera's level and are left out.
+    /// for: `beam_detail::hash_level`, which is blind to a finer level the
+    /// camera loaded; `tex=<resident>/<asked>` shows that one). It stays the
+    /// same while nothing in the beam moves, whatever the camera does
+    /// (beam_detail.rs); rigged meshes, avatars and HUDs keep the camera's
+    /// level and are left out.
     pub fn trace_projector_casters(&self, world: &World, eye: Vec3) {
         let mut line = String::new();
         let blend_casts = aurora_render::shadow_cull::blend_casts();
-        let mut levels = std::collections::BTreeSet::new();
         for slot in self.beams.slots() {
+            let mut levels = std::collections::BTreeSet::new();
             let (mut n, mut hash) = (0u32, 0xcbf2_9ce4_8422_2325u64);
             let mut feed = |bytes: &[u8]| {
                 for b in bytes {
@@ -4180,7 +4182,6 @@ impl Scene {
             // (resident level / level the floor asks, per texture, 255: none)
             let pairs: Vec<String> = levels.iter().map(|(r, f)| format!("{r}/{f}")).collect();
             line += &format!(" map{slot}: casters={n} hash={hash:016x} tex={}", pairs.join(","));
-            levels.clear();
         }
         let (frame, phase) = self.projector_phase;
         let phase = if phase.is_empty() {

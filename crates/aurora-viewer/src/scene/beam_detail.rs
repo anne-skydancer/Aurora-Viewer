@@ -140,7 +140,10 @@ impl Beams {
 /// discard level) of the one resident and the one the projector's map asks
 /// for. It changes while the floor is not met (the map's texture is still
 /// loading) and stays when the camera loads a finer level than the map
-/// needs: a shadow does not depend on the observer. 255: not resident yet.
+/// needs: a shadow does not depend on the observer (not true yet in the
+/// viewer, see the `finer` and `close` phases of the shade demo: this hash is
+/// blind to that case on purpose, `tex=<resident>/<asked>` of the trace shows
+/// it). 255: not resident yet.
 pub fn hash_level(resident: Option<u8>, floor: Option<u8>) -> u8 {
     match (resident, floor) {
         (Some(r), Some(f)) => r.max(f),

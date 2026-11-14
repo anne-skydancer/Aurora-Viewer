@@ -15,7 +15,9 @@
 //! one reference pose, one phase per camera axis (`Phase`: dolly, truck, boom,
 //! yaw, pitch, roll, zoom, close), each coming back to the reference pose and
 //! holding it for a capture; `shade,close` only the reference and the close
-//! phase. Both give the shade a 4096 px texture, so that the close phase can
+//! phase, and `shade,finer` the reference and a phase where the camera does
+//! not move and the demo asks for the finer level itself (the control of
+//! `close`). Each gives the shade a 4096 px texture, so that the close phase can
 //! make the camera ask for a finer level than the projector's map needs. The
 //! trace names the phase (`phase=`) and the texture's resident level beside
 //! the level the map asks for (`tex=<resident>/<asked>`).
@@ -177,6 +179,11 @@ pub enum Phase {
     /// So close to the shade that the camera asks for a finer level of its
     /// texture than the map does.
     Close,
+    /// The reference pose, the camera not moving, while the demo itself asks
+    /// for the finer level of the shade's texture (`note_usage_fixed`): the
+    /// control of `Close`, which isolates the texture's resident level from
+    /// everything else the close camera changes.
+    Finer,
 }
 
 impl Phase {
@@ -191,6 +198,7 @@ impl Phase {
             Phase::Roll => "roll",
             Phase::Zoom => "zoom",
             Phase::Close => "close",
+            Phase::Finer => "finer",
         }
     }
 
@@ -201,7 +209,7 @@ impl Phase {
     /// per value.
     fn extremes(self) -> &'static [f32] {
         match self {
-            Phase::Reference => &[],
+            Phase::Reference | Phase::Finer => &[],
             Phase::Dolly => &[-9.0, 14.0],
             Phase::Truck => &[30.0],
             Phase::Boom => &[60.0, -6.0],
@@ -218,6 +226,7 @@ impl Phase {
     pub fn frames(self) -> u64 {
         match self {
             Phase::Reference => REFERENCE_FRAMES,
+            Phase::Finer => FINER_FRAMES,
             p => EXCURSION * p.extremes().len() as u64 + HOLD,
         }
     }
@@ -248,6 +257,12 @@ pub struct Pose {
 
 /// Frames the reference pose is held at the start (two captures).
 const REFERENCE_FRAMES: u64 = 200;
+/// What the `Finer` phase asks of the texture: the camera's cap, which
+/// loads level 1 of the 4096 px texture.
+const FINER_PX: f32 = 2048.0;
+/// The `Finer` phase: the level is asked at its first frame and held; the
+/// capture is at its end.
+const FINER_FRAMES: u64 = 300;
 /// An excursion: 80 frames out, 40 at the far end, 80 back.
 const RAMP: u64 = 80;
 const DWELL: u64 = 40;
@@ -277,8 +292,11 @@ pub fn phase_start(phases: &[Phase], index: usize) -> u64 {
     START + phases[..index].iter().map(|p| p.frames()).sum::<u64>()
 }
 
-/// Frames to capture: the reference twice (the noise floor), then the last
-/// frames of each phase's hold. `AURORA_CAPTURE_FRAMES` for the path.
+/// Frames to capture: the reference twice (the noise floor); in each phase,
+/// the middle of the dwell at the far end of every excursion (the camera
+/// displaced: the shade out of view for truck, boom, yaw and pitch), then
+/// the last frames of its hold (the reference pose again).
+/// `AURORA_CAPTURE_FRAMES` for the path.
 pub fn capture_frames(phases: &[Phase]) -> Vec<u64> {
     let mut out = Vec::new();
     for (i, &p) in phases.iter().enumerate() {
@@ -287,6 +305,7 @@ pub fn capture_frames(phases: &[Phase]) -> Vec<u64> {
         if p == Phase::Reference {
             out.extend([start + REFERENCE_FRAMES / 2 - 10, end - 10]);
         } else {
+            out.extend((0..p.extremes().len() as u64).map(|k| start + k * EXCURSION + RAMP + DWELL / 2));
             out.push(end - 10);
         }
     }
@@ -347,7 +366,7 @@ pub fn axes_pose(phases: &[Phase], frame: u64) -> Pose {
         fov_scale: 1.0,
     };
     match phase {
-        Phase::Reference => {}
+        Phase::Reference | Phase::Finer => {}
         Phase::Dolly => pose.eye = target + dir * (REFERENCE_DISTANCE + value),
         Phase::Truck => {
             pose.eye += right * value;
@@ -375,7 +394,7 @@ pub fn axes_pose(phases: &[Phase], frame: u64) -> Pose {
 pub enum Variant {
     /// `shade`: the dolly, a 1024 px texture.
     Dolly,
-    /// `shade,axes` or `shade,close`: a camera path of phases, a 4096 px
+    /// `shade,axes`, `shade,close` or `shade,finer`: a camera path of phases, a 4096 px
     /// texture.
     Path(Vec<Phase>),
 }
@@ -391,6 +410,7 @@ impl Variant {
             None => Some(Variant::Dolly),
             Some("axes") => Some(Variant::Path(AXES.to_vec())),
             Some("close") => Some(Variant::Path(vec![Phase::Reference, Phase::Close])),
+            Some("finer") => Some(Variant::Path(vec![Phase::Reference, Phase::Finer])),
             Some(_) => None,
         }
     }
@@ -445,7 +465,16 @@ impl ProjectorShadeDemo {
         renderer: &mut Renderer,
         jobs: &Jobs,
     ) {
-        if self.sent || frame < ARRIVE_FRAME {
+        if self.sent {
+            // the control: the level is asked by the demo, the camera at rest
+            if let Some(Variant::Path(phases)) = variant()
+                && locate(phases, frame).0 == Phase::Finer
+            {
+                textures.note_usage_fixed(&texture(), FINER_PX);
+            }
+            return;
+        }
+        if frame < ARRIVE_FRAME {
             return;
         }
         self.sent = true;
@@ -532,9 +561,9 @@ impl ProjectorShadeDemo {
         world.apply(NetEvent::ObjectUpdates { handle: HANDLE, objects });
         match variant() {
             Some(Variant::Path(phases)) => log::info!(
-                "demo projector shade: a pierced shade round a projector, camera path {:?} from frame {START}; AURORA_CAPTURE_FRAMES={:?}",
+                "demo projector shade: a pierced shade round a projector, camera path {:?} from frame {START}; AURORA_CAPTURE_FRAMES={}",
                 phases.iter().map(|p| p.name()).collect::<Vec<_>>(),
-                capture_frames(phases)
+                capture_frames(phases).iter().map(u64::to_string).collect::<Vec<_>>().join(",")
             ),
             _ => log::info!("demo projector shade: a pierced shade round a projector, camera dolly from frame {START}"),
         }
@@ -620,36 +649,35 @@ mod tests {
 
     #[test]
     fn each_axis_moves_only_its_own() {
-        let at = |phase: Phase, k: f32| {
+        // (at the far end of the first excursion of a phase)
+        let at = |phase: Phase| {
             let i = AXES.iter().position(|p| *p == phase).unwrap();
-            let t = phase_start(&AXES, i) + (RAMP as f32 * k) as u64;
-            axes_pose(&AXES, t.max(phase_start(&AXES, i) + RAMP))
+            axes_pose(&AXES, phase_start(&AXES, i) + RAMP)
         };
         let reference = axes_pose(&AXES, START);
         let forward = (reference.target - reference.eye).normalize();
-        // (at the far end of the first excursion of each)
-        let dolly = at(Phase::Dolly, 1.0);
+        let dolly = at(Phase::Dolly);
         assert!(((dolly.target - dolly.eye).normalize() - forward).length() < 1e-4);
         assert!((dolly.eye - reference.eye).dot(forward).abs() > 8.0);
-        let truck = at(Phase::Truck, 1.0);
+        let truck = at(Phase::Truck);
         assert!(((truck.target - truck.eye).normalize() - forward).length() < 1e-4);
         assert!((truck.eye - reference.eye).dot(forward).abs() < 1e-3);
-        let boom = at(Phase::Boom, 1.0);
+        let boom = at(Phase::Boom);
         assert!((boom.eye - reference.eye).x.abs() < 1e-4 && (boom.eye - reference.eye).z > 50.0);
-        let yaw = at(Phase::Yaw, 1.0);
+        let yaw = at(Phase::Yaw);
         assert_eq!(yaw.eye, reference.eye);
         // (turned about the vertical: its horizontal bearing is the opposite one)
         let flat = |v: Vec3| Vec3::new(v.x, v.y, 0.0).normalize();
         assert!(flat(yaw.target - yaw.eye).dot(flat(forward)) < -0.999, "the shade is behind");
-        let pitch = at(Phase::Pitch, 1.0);
+        let pitch = at(Phase::Pitch);
         assert_eq!(pitch.eye, reference.eye);
         let tilt = (pitch.target - pitch.eye).normalize().dot(forward).acos().to_degrees();
         assert!((tilt - 75.0).abs() < 0.5, "{tilt}");
         assert!((pitch.target - pitch.eye).z > forward.z, "tilted up");
-        let roll = at(Phase::Roll, 1.0);
+        let roll = at(Phase::Roll);
         assert_eq!((roll.eye, roll.target), (reference.eye, reference.target));
         assert!((roll.roll - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
-        let zoom = at(Phase::Zoom, 1.0);
+        let zoom = at(Phase::Zoom);
         assert_eq!((zoom.eye, zoom.target, zoom.roll), (reference.eye, reference.target, 0.0));
         assert!((zoom.fov_scale - 0.35).abs() < 1e-5);
         // the second excursion goes the other way
@@ -657,7 +685,7 @@ mod tests {
         let wide = axes_pose(&AXES, phase_start(&AXES, i) + EXCURSION + RAMP);
         assert!((wide.fov_scale - 1.7).abs() < 1e-5);
         // the close phase ends at the shade, at CLOSE_DISTANCE from it
-        let close = at(Phase::Close, 1.0);
+        let close = at(Phase::Close);
         assert!((close.target - shade_middle()).length() < 1e-3);
         assert!(((close.eye - shade_middle()).length() - CLOSE_DISTANCE).abs() < 1e-3);
     }
@@ -678,14 +706,27 @@ mod tests {
         );
         assert_eq!(Variant::parse("cluster"), None);
         assert_eq!(Variant::parse("shade,other"), None);
-        // two captures of the reference, then one per phase, each in its hold
+        assert_eq!(
+            Variant::parse("shade,finer"),
+            Some(Variant::Path(vec![Phase::Reference, Phase::Finer]))
+        );
+        // two captures of the reference, then in each phase one per dwell and
+        // one in the hold, in order
         let frames = capture_frames(&AXES);
-        assert_eq!(frames.len(), AXES.len() + 1);
+        let dwells: usize = AXES.iter().map(|p| p.extremes().len()).sum();
+        assert_eq!(frames.len(), AXES.len() + 1 + dwells);
         assert!(frames.windows(2).all(|w| w[0] < w[1]));
         for (i, &p) in AXES.iter().enumerate().skip(1) {
-            // (the last frames of the phase, where its pose is the reference)
-            assert_eq!(locate(&AXES, frames[i + 1]).0, p);
-            assert!(frames[i + 1] >= phase_start(&AXES, i) + p.frames() - HOLD);
+            let (start, end) = (phase_start(&AXES, i), phase_start(&AXES, i) + p.frames());
+            let inside: Vec<u64> = frames.iter().copied().filter(|f| (start..end).contains(f)).collect();
+            assert_eq!(inside.len(), p.extremes().len() + 1, "{p:?}");
+            // (the last one in the hold, where the pose is the reference)
+            assert!(inside[inside.len() - 1] >= end - HOLD);
+            // (the others at the far end of an excursion, the camera displaced)
+            for (k, f) in inside[..inside.len() - 1].iter().enumerate() {
+                let (j, e) = excursion(p, f - start);
+                assert_eq!((j, e), (k, 1.0), "{p:?}");
+            }
         }
     }
 }
