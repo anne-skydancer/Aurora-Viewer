@@ -562,11 +562,11 @@ fn attachment_self_menu(ui: &mut Builder, f: &Facts, key: ObjKey) {
         !toggle_blocked,
         CtxAction::SitStand,
     );
-    // enable_fly_land: flying already, or not sitting (LLAgent::enableFlying)
+    // enable_fly_land: flying already, or LLAgent::enableFlying
     ui.item_if(
         "plane-departure-filled",
         aurora_i18n::tr!("extra-fly-land-8"),
-        f.flying || !f.seated,
+        !f.fly_blocked,
         CtxAction::ToggleFly,
     );
     ui.item(
@@ -1812,7 +1812,8 @@ mod tests {
             "ui-context-drop",
         ]);
         assert_eq!(got, expected);
-        // sitting: "Fly / Land" is greyed (enable_fly_land)
+        // not flying and no take-off (sitting, no-fly land, RLVa @fly):
+        // "Fly / Land" is greyed (enable_fly_land)
         let fly = |f: &Facts| {
             world_menu(&Target::Attachment { key }, f, Vec3::ZERO)
                 .into_iter()
@@ -1821,7 +1822,7 @@ mod tests {
         };
         assert!(fly(&f));
         assert!(!fly(&Facts {
-            seated: true,
+            fly_blocked: true,
             ..Facts::default()
         }));
     }
