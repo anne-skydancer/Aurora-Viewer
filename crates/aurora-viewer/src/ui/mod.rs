@@ -95,6 +95,7 @@ pub mod notification_center;
 pub mod notifications;
 pub(crate) mod numeric_drag;
 pub mod object_actions;
+pub mod omnifilter;
 pub mod options;
 pub mod owned_land;
 pub mod parcel_icons;
@@ -230,8 +231,13 @@ pub struct Panels {
     pub quick_prefs: bool,
     /// "Voice controls" (toolbar): who is in the voice channel and who speaks.
     pub voice_controls: bool,
+<<<<<<< HEAD
     /// The pose stand (toolbar `pose_stand`).
     pub pose_stand: bool,
+=======
+    /// The Omnifilter Rules Editor (Communicate menu, toolbar `omnifilter`).
+    pub omnifilter: bool,
+>>>>>>> feat/omnifilter
     /// "About Aurora Viewer" (Help menu): the version, the system
     /// information and the licences.
     pub about: bool,
@@ -302,7 +308,11 @@ impl Panels {
             destinations: false,
             quick_prefs: false,
             voice_controls: false,
+<<<<<<< HEAD
             pose_stand: false,
+=======
+            omnifilter: false,
+>>>>>>> feat/omnifilter
             about: false,
             stream_title: settings.audio.stream_title_window,
             stream_title_history: false,
