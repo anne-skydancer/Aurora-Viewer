@@ -11753,13 +11753,15 @@ What the inventory must show with these scenarios:
   textures): after the shade has loaded, the hash is the same on every line
   of the dolly, whatever the camera does. Without the texture floor
   (`note_usage_beam` left out) the hash changes twice as the camera
-  comes in (the texture is first seen from afar). Rigged meshes, avatars,
-  flexible prims, trees and HUDs keep the camera's level and are not in the
-  hash. The line also gives the costs (decision D6, no cap): `shadow_geom_kb`,
+  comes in (the texture is first seen from afar). Rigged meshes, avatars
+  and HUDs keep the camera's level and are not in the hash; flexible prims,
+  trees and grass are in it with a constant level (they keep the camera's
+  level of geometry). The line also gives the costs (no cap on the shadow
+  geometry, a statistic to measure): `shadow_geom_kb`,
   the geometry only the projectors' maps hold, `beam_textures` and
   `beam_texture_kb`, the textures the floor holds finer than the camera
   would and what that costs; the same three are in the `AURORA_PROFILE=1`
-  line. Measure them in a store and at KB on the grid.
+  line (fields `shadow_geom_kb`, `beam_textures`, `beam_texture_kb`). Measure them in a store and at KB on the grid.
 - **`AURORA_PROJECTOR_TRACE=1`**: writes `projector trace:` lines with the
   camera position, the number of projectors that may hold a shadow map, the
   shadow-map owners (the last eight digits of each projector's id, `-` for

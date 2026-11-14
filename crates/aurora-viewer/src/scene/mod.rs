@@ -3035,7 +3035,6 @@ impl Scene {
         // the GPU object table covers every slot (an attachment's avatar
         // index is always in it, as in the CPU lists)
         renderer.cull.objects.ensure_len(self.gpu.len());
-        self.refresh_beam_details(renderer, world);
         let now = self.held_at.unwrap_or_else(Instant::now);
         let n = world.objects.slots.len();
         let agent = world.agent_id;
@@ -3058,6 +3057,9 @@ impl Scene {
             self.pick.changed(idx);
         }
         touched.clear();
+        // (after the released slots: a slot reused this frame must not give
+        // its old geometry's key to its new object)
+        self.refresh_beam_details(renderer, world, now);
         self.touched_tmp = touched;
         self.sync_parcel_crossings(world);
         step(&mut slow, "touched");
@@ -4005,16 +4007,16 @@ impl Scene {
             o.shape_dirty = false;
             o.material_dirty = false;
         }
-        self.refresh_shadow_geom(renderer, world, idx);
+        self.refresh_shadow_geom(renderer, world, idx, now);
     }
 
     /// The usage visit's slice (one object in 30, as the textures' usage is
     /// noted): the shadow level of each object again, since the projectors
     /// may have moved or changed owner of their map.
-    fn refresh_beam_details(&mut self, renderer: &mut Renderer, world: &World) {
+    fn refresh_beam_details(&mut self, renderer: &mut Renderer, world: &World, now: Instant) {
         let phase = (self.frame % 30) as usize;
         for idx in (phase..self.gpu.len()).step_by(30) {
-            self.refresh_shadow_geom(renderer, world, idx);
+            self.refresh_shadow_geom(renderer, world, idx, now);
         }
         if phase == 0 {
             self.note_beam_costs();
@@ -4038,11 +4040,11 @@ impl Scene {
             .filter(|(k, n)| self.geoms.get(*k).is_some_and(|e| e.refs == **n))
             .filter_map(|(k, _)| self.geom_ready(k))
             .flat_map(|geom| {
+                // (the arena's index buffer is u16)
                 geom.faces
                     .iter()
                     .flatten()
-                    .map(|a| a.vertex_count as u64 * std::mem::size_of::<Vertex>() as u64 + a.index_count as u64 * 4)
-                    .collect::<Vec<_>>()
+                    .map(|a| a.vertex_count as u64 * std::mem::size_of::<Vertex>() as u64 + a.index_count as u64 * 2)
             })
             .sum();
         let (textures, texture_bytes) = self.textures.beam_floor();
@@ -4059,6 +4061,8 @@ impl Scene {
     /// keep the camera's level and are left out.
     pub fn trace_projector_casters(&self, world: &World, eye: Vec3) {
         let mut line = String::new();
+        let now = Instant::now();
+        let blend_casts = aurora_render::shadow_cull::blend_casts();
         for slot in self.beams.slots() {
             let (mut n, mut hash) = (0u32, 0xcbf2_9ce4_8422_2325u64);
             let mut feed = |bytes: &[u8]| {
@@ -4067,22 +4071,26 @@ impl Scene {
                 }
             };
             for (idx, g) in self.gpu.iter().enumerate() {
-                if g.faces.is_empty() || !beam_detail::eligible(g) || !self.beams.holding(g.center, g.radius).any(|s| s == slot) {
+                if g.faces.is_empty() || !beam_detail::eligible(g) {
                     continue;
                 }
                 let Some(o) = world.objects.get(idx) else {
                     continue;
                 };
+                if !self.beams.holding(g.center, beam_detail::radius_of(o, now)).any(|s| s == slot) {
+                    continue;
+                }
                 n += 1;
                 feed(o.full_id.as_bytes());
                 feed(&[g.shadow_geom.or(g.geom).and_then(beam_detail::level_of).unwrap_or(255)]);
-                for f in g.faces.iter().filter(|f| beam_detail::alpha_tested(f.pass)) {
+                for f in g.faces.iter().filter(|f| beam_detail::alpha_tested(f.pass, blend_casts)) {
                     feed(&[self.textures.decoded_level(&f.tex_id).unwrap_or(255)]);
                 }
             }
             line += &format!(" map{slot}: casters={n} hash={hash:016x}");
         }
         log::info!(
+            target: "aurora_viewer::scene::lights",
             "projector casters: eye={eye:?}{line} shadow_geom_kb={} beam_textures={} beam_texture_kb={}",
             self.stats.shadow_geom_kb,
             self.stats.beam_textures,
@@ -4093,23 +4101,35 @@ impl Scene {
     /// Choose, request and bind the geometry object `idx` draws in the
     /// projectors' shadow maps (beam_detail.rs), and write its ranges to the
     /// faces. The camera range stands while the geometry is pending.
-    fn refresh_shadow_geom(&mut self, renderer: &mut Renderer, world: &World, idx: usize) {
+    fn refresh_shadow_geom(&mut self, renderer: &mut Renderer, world: &World, idx: usize, now: Instant) {
         let Some(g) = self.gpu.get(idx) else {
             return;
         };
+        let held = g.shadow_geom;
+        if self.beams.is_empty() && held.is_none() {
+            return;
+        }
+        // The sphere the projectors test and size the object by: its place
+        // and its scale, never the bounds of the geometry it is drawn with
+        // (they change with the camera's level of detail).
+        let radius = world.objects.get(idx).map_or(g.radius, |o| beam_detail::radius_of(o, now));
         // the texture floor: what the maps cover of its alpha-tested faces
         if beam_detail::eligible(g) {
-            for f in g.faces.iter().filter(|f| beam_detail::alpha_tested(f.pass) && !f.tex_id.is_nil()) {
-                if let Some(px) = self.beams.texels(g.center, g.radius, f.repeats) {
+            let blend_casts = aurora_render::shadow_cull::blend_casts();
+            for f in g
+                .faces
+                .iter()
+                .filter(|f| beam_detail::alpha_tested(f.pass, blend_casts) && !f.tex_id.is_nil())
+            {
+                if let Some(px) = self.beams.texels(g.center, radius, f.repeats) {
                     self.textures.note_usage_beam(&f.tex_id, px);
                 }
             }
         }
-        let held = g.shadow_geom;
         let camera = g.geom.filter(|_| beam_detail::eligible(g) && !g.faces.is_empty());
         let desired = camera
             .and_then(|cam| {
-                let level = self.beams.level(g.center, g.radius, self.lod_factor)?;
+                let level = self.beams.level(g.center, radius, self.lod_factor)?;
                 beam_detail::shadow_key(cam, level)
             })
             .filter(|k| Some(*k) != camera);

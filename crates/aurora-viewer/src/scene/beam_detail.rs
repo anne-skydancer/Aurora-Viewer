@@ -116,6 +116,10 @@ impl Beams {
             .map(|b| b.slot)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.beams.is_empty()
+    }
+
     /// The slots of the maps, in order.
     pub fn slots(&self) -> impl Iterator<Item = usize> + '_ {
         self.beams.iter().map(|b| b.slot)
@@ -123,9 +127,23 @@ impl Beams {
 }
 
 /// A face whose shadow is alpha-tested: its base texture shapes the shadow.
-pub fn alpha_tested(pass: super::Pass) -> bool {
+/// A blended face only casts when `blend_casts` (`shadow_cull::blend_casts`).
+pub fn alpha_tested(pass: super::Pass, blend_casts: bool) -> bool {
     use super::Pass;
-    matches!(pass, Pass::Mask | Pass::MaskTwoSided | Pass::Blend)
+    matches!(pass, Pass::Mask | Pass::MaskTwoSided) || (pass == Pass::Blend && blend_casts)
+}
+
+/// The radius the projectors test an object with: half its diagonal. It
+/// comes from the object's scale alone, as the camera's level does
+/// (`SyncCtx::lod_metrics`), not from the bounds of the geometry drawn,
+/// which differ from one level of detail to the next.
+pub fn radius_of(o: &crate::world::objects::Object, now: std::time::Instant) -> f32 {
+    radius_of_scale(o.visual_scale_at(now))
+}
+
+/// Half the diagonal of a box of this scale (at least 5 cm).
+pub fn radius_of_scale(scale: Vec3) -> f32 {
+    (scale.max(Vec3::splat(0.001)) * 0.5).length().max(0.05)
 }
 
 /// The level of detail of a geometry (None for the kinds without levels).
@@ -244,21 +262,19 @@ mod tests {
     }
 
     #[test]
-    fn the_level_does_not_change_with_the_camera() {
+    fn the_level_reads_the_object_and_the_projectors_only() {
+        // `Beams::level` takes no camera; what could leak it in is the
+        // sphere it is given. That comes from the scale alone (the bounds of
+        // the geometry drawn change with the camera's level of detail), so
+        // two levels of one shape with different bounds give one level.
         let b = beams(&[projector(Vec3::new(0.0, 0.0, 6.0))]);
-        let (center, radius) = (Vec3::new(0.3, 0.2, 2.0), 0.43);
-        let level = b.level(center, radius, 2.0).expect("in the beam");
-        let mut seed = 7;
-        let mut camera_levels = std::collections::BTreeSet::new();
-        for _ in 0..500 {
-            // a random eye, direction (not an input at all) and field of view
-            let eye = Vec3::new(rng(&mut seed) - 0.5, rng(&mut seed) - 0.5, rng(&mut seed) * 0.5) * 200.0;
-            let fov = 0.2 + rng(&mut seed) * 2.0;
-            camera_levels.insert(lod_for(radius, center.distance(eye), 2.0, fov));
-            assert_eq!(b.level(center, radius, 2.0), Some(level));
-        }
-        // (the camera's own level does vary over the same samples)
-        assert!(camera_levels.len() > 1, "{camera_levels:?}");
+        let scale = Vec3::new(0.6, 0.5, 0.4);
+        let radius = radius_of_scale(scale);
+        assert!((radius - scale.length() * 0.5).abs() < 1e-6);
+        let level = b.level(Vec3::new(0.3, 0.2, 2.0), radius, 2.0).expect("in the beam");
+        // (a camera-level bounds radius a few percent off is not an input)
+        assert_eq!(b.level(Vec3::new(0.3, 0.2, 2.0), radius_of_scale(scale), 2.0), Some(level));
+        assert_eq!(radius_of_scale(Vec3::ZERO), 0.05);
     }
 
     #[test]
@@ -283,12 +299,6 @@ mod tests {
         let (center, radius) = (Vec3::new(0.3, 0.2, 2.0), 0.43);
         let floor = b.texels(center, radius, 1.0).expect("in the beam");
         assert!(floor > 50.0, "{floor}");
-        let mut seed = 11;
-        for _ in 0..500 {
-            // the camera is no input: whatever it does, the same floor
-            let _eye = Vec3::new(rng(&mut seed) - 0.5, rng(&mut seed) - 0.5, rng(&mut seed)) * 300.0;
-            assert_eq!(b.texels(center, radius, 1.0), Some(floor));
-        }
         // nearer the apex, more texels; repeats lower it; outside, none
         let nearer = b.texels(Vec3::new(0.3, 0.2, 4.0), radius, 1.0).unwrap();
         assert!(nearer > floor);
@@ -309,11 +319,14 @@ mod tests {
     #[test]
     fn only_alpha_tested_faces_get_the_floor() {
         use super::super::Pass;
-        for p in [Pass::Mask, Pass::MaskTwoSided, Pass::Blend] {
-            assert!(alpha_tested(p), "{p:?}");
+        for p in [Pass::Mask, Pass::MaskTwoSided] {
+            assert!(alpha_tested(p, false), "{p:?}");
         }
+        // glass only when it casts
+        assert!(alpha_tested(Pass::Blend, true));
+        assert!(!alpha_tested(Pass::Blend, false));
         for p in [Pass::Opaque, Pass::OpaqueTwoSided, Pass::Hidden] {
-            assert!(!alpha_tested(p), "{p:?}");
+            assert!(!alpha_tested(p, true), "{p:?}");
         }
     }
 

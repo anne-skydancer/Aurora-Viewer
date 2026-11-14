@@ -8,7 +8,7 @@
 //! dollies away from the slab and back (`camera`) along one line of sight.
 //! With `AURORA_PROJECTOR_TRACE=1` the viewer logs,
 //! every 15 frames, a hash of what each map draws (`projector casters:`): it
-//! must stay the same over the whole dolly. Two captures, camera near and far
+//! must stay the same over the whole dolly. Three captures, camera far, near and far
 //! (`AURORA_CAPTURE_FRAMES`), show the same dots.
 
 use super::{HANDLE, floor_at, prim, shape, te};

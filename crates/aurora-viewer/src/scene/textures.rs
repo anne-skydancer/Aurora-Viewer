@@ -5068,11 +5068,15 @@ mod tests {
                 s.note_usage_away(&id, away);
             }
             s.recompute_wants();
-            s.entries[&id].beam_px
+            (s.entries[&id].beam_px, s.entries[&id].want)
         };
-        let floor = run(0.0, 0.0);
+        let (floor_px, floor_want) = run(0.0, 0.0);
         for (px, away) in [(10.0, 0.0), (300.0, 20.0), (0.0, 900.0), (4000.0, 4000.0)] {
-            assert_eq!(run(px, away), floor, "camera {px} away {away}");
+            let (beam_px, want) = run(px, away);
+            assert_eq!(beam_px, floor_px, "camera {px} away {away}");
+            // the camera can only ask for a finer level, never a coarser
+            // one than the beam's floor
+            assert!(want <= floor_want, "camera {px} away {away}: {want} > {floor_want}");
         }
     }
 
