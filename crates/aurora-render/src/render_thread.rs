@@ -167,6 +167,15 @@ impl<J, R> Owner<J, R> {
         (s.busy || s.job.is_some()).then(|| s.handed.map(|t| t.elapsed())).flatten()
     }
 
+    /// The process stood still for `gap` (the computer slept, a debugger
+    /// held it): that time is not the worker's. The job handed over counts
+    /// as handed that much later, at the latest now.
+    pub fn forgive(&self, gap: Duration) {
+        let mut s = self.0.state.lock();
+        let now = Instant::now();
+        s.handed = s.handed.map(|t| (t + gap).min(now));
+    }
+
     /// The result of the job handed over when the worker is already done
     /// with it, without waiting; None while it is not (or once taken).
     pub fn take_ready(&self) -> Result<Option<R>, WorkerGone> {

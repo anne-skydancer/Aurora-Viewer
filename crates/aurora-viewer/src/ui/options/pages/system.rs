@@ -1,7 +1,8 @@
 //! Preferences › Language and updates: the interface's language, how the
-//! new versions come, whether the `secondlife:` links of web pages open
-//! in this viewer, the backup of the settings (`options/backup.rs`), and
-//! the removal of Aurora from this computer (`uninstall.rs`).
+//! new versions come, the computer's screen and sleep (power.rs), whether
+//! the `secondlife:` links of web pages open in this viewer, the backup of
+//! the settings (`options/backup.rs`), and the removal of Aurora from this
+//! computer (`uninstall.rs`).
 
 use super::super::COMBO_W;
 use super::super::cx::{Cx, Nothing, field};
@@ -70,6 +71,16 @@ pub fn page(cx: &mut Cx) {
                 (Interval::Never, tr!("update-interval-never")),
             ],
         );
+    });
+    // the computer's screen and sleep (power.rs): the first is the Legacy
+    // Viewer's always-on behaviour behind a setting, the second Aurora's own
+    cx.group(tr!("ui-options-power"), |cx| {
+        cx.toggle(
+            tr!("ui-options-keep-screen-on"),
+            tr!("ui-options-keep-screen-on-help"),
+            &field!(keep_screen_on),
+        );
+        cx.toggle(tr!("ui-options-keep-awake"), tr!("ui-options-keep-awake-help"), &field!(keep_awake));
     });
     // the system's state, not a saved setting, so outside the page's reset;
     // the Legacy Viewer's installer asks it once

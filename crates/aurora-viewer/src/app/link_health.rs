@@ -56,6 +56,13 @@ impl App {
     /// (a kick does not), a region restart keeps its own message.
     pub(super) fn on_disconnected(&mut self, reason: &str, lost: bool) {
         self.session_ended();
+        // the computer slept: its logout was asked before the link went,
+        // the login screen says that, with no place to reconnect to
+        if let Some(note) = self.sleep_logout_note() {
+            log::info!("the link ended after the computer's sleep ({reason}): the session was logged out by the sleep");
+            self.back_to_login(Some(note));
+            return;
+        }
         let restart = self.restart_disconnect();
         let place = if lost && restart.is_none() {
             let size = self.world.main().map_or((256, 256), |r| (r.heightmap.size_x, r.heightmap.size_y));

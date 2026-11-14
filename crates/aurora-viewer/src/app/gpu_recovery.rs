@@ -32,6 +32,8 @@ impl App {
         }
         let window = Arc::new(event_loop.create_window(attrs)?);
         crate::window_hold::install(&window);
+        // after window_hold's: its hook sits in front of that one
+        crate::power::install(&window);
         crate::slurl_handoff::window_ready(&window);
         Ok(window)
     }
