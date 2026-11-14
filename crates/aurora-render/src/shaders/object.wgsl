@@ -1928,16 +1928,22 @@ fn st_hash(v: u32) -> u32 {
 // S samples, with xi in 24-bit fixed point, so that its mean over a tile is
 // exactly 1/2 and E[R] = a S.
 fn st_mask(px: vec2<u32>, tie: u32, prim: u32, a: f32) -> u32 {
-    // the primitive's own seed (and the frame's when temporal)
-    var seed = st_hash(st_hash(tie * 0x9e3779b9u + 0x7f4a7c15u) ^ st_hash(prim + 0x632be5abu));
+    let layer = st_hash(st_hash(tie * 0x9e3779b9u + 0x7f4a7c15u) ^ st_hash(prim + 0x632be5abu));
+    var seed = layer;
+    var frame = 0u;
     if ((st.flags & 1u) != 0u) {
-        seed = st_hash(seed + st.frame_seed);
+        // the subset is re-hashed every frame; the dither instead advances
+        // by the golden ratio conjugate (frame_seed is frame * 0x9e3779b9,
+        // that fraction of 2^32), so that 8 frames hold 8 well spread values
+        // of xi (paper section 5, stratified seeds)
+        seed = st_hash(layer + st.frame_seed);
+        frame = st.frame_seed >> 8u;
     }
     // xi: the pixel's stratum in the blue-noise tile (paper section 3.1, R
     // dithered across a tile), rotated by the primitive's own offset
     // (Cranley-Patterson) so that layers stay decorrelated
     let rank = st_masks[(st.samples + 1u) * ST_SEEDS + (px.y & (ST_TILE - 1u)) * ST_TILE + (px.x & (ST_TILE - 1u))];
-    let xi24 = ((2u * rank + 1u) * 2048u + (seed >> 8u)) & 0xffffffu;
+    let xi24 = ((2u * rank + 1u) * 2048u + (layer >> 8u) + frame) & 0xffffffu;
     let dither = f32(xi24) / 16777216.0;
     // the subset is hashed from the layer's seed and the pixel, whatever the
     // pixel values: two layers whose rotations met on one table index would

@@ -49,8 +49,12 @@
 //! xi appears once (paper section 3.1, "R could be dithered across a tile"),
 //! rotated by the primitive's own offset to keep the layers decorrelated:
 //! the error of R over a neighbourhood is high-frequency, and its mean stays
-//! alpha S. Needs multisampled targets of at
-//! least 2 samples (every device has 4), and `PRIMITIVE_INDEX` for the
+//! alpha S. With the temporal blend the dither of a pixel advances every
+//! frame by the golden ratio conjugate (in 24-bit fixed point, so it stays
+//! exact at any frame number) instead of being drawn again: eight
+//! consecutive frames hold eight well spread values of xi (paper section 5,
+//! stratified seeds), and the sum of their R stays within 1 of 8 alpha S.
+//! Needs multisampled targets of at least 2 samples (every device has 4), and `PRIMITIVE_INDEX` for the
 //! triangle in the seed (without it the seed is per face: coplanar
 //! fragments of one face then occlude instead of blending).
 
@@ -1586,6 +1590,58 @@ mod tests {
         let (rt, rw) = ((st / n).sqrt(), (sw / n).sqrt());
         assert!(rt < 0.025 && mt < 0.1, "tile rms {rt} max {mt}");
         assert!(rt < rw * 0.6 && mt < mw * 0.7, "white rms {rw} max {mw}");
+    }
+
+    #[test]
+    fn eight_frames_of_the_stratified_dither_sum_to_eight_alpha_s() {
+        let tile = tile_ranks();
+        let (mut weyl_ss, mut hash_ss, mut weyl_max, mut hash_max, mut n) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for ai in 1..64 {
+            let a = ai as f32 / 64.0;
+            for k in (0..TILE_CELLS).step_by(37) {
+                let rot = st_hash(k as u32 * 77 + 1) >> 8;
+                for f0 in [0u32, 1000, 123_456, 0xffff_fff0] {
+                    let (mut weyl, mut hashed) = (0u32, 0u32);
+                    for f in 0..8u32 {
+                        let frame = f0.wrapping_add(f);
+                        weyl += r_of(a, 8, xi24(tile[k], rot, frame_fraction(frame)));
+                        // the old way: a fresh hash of the frame, every frame
+                        hashed += r_of(a, 8, xi24(tile[k], st_hash(rot ^ st_hash(frame).wrapping_mul(3)) >> 8, 0));
+                    }
+                    let want = f64::from(a) * 64.0;
+                    let (ew, eh) = (f64::from(weyl) - want, f64::from(hashed) - want);
+                    weyl_ss += ew * ew;
+                    hash_ss += eh * eh;
+                    weyl_max = weyl_max.max(ew.abs());
+                    hash_max = hash_max.max(eh.abs());
+                    n += 1.0;
+                }
+            }
+        }
+        let (weyl_rms, hash_rms) = ((weyl_ss / n).sqrt(), (hash_ss / n).sqrt());
+        // measured: stratified max 1.0, rms 0.37; hashed max 4, rms 1.14
+        assert!(weyl_max <= 1.0, "stratified max {weyl_max}");
+        assert!(weyl_rms < 0.5, "stratified rms {weyl_rms}");
+        assert!(
+            weyl_rms < hash_rms * 0.5 && weyl_max < hash_max,
+            "hashed rms {hash_rms} max {hash_max}"
+        );
+    }
+
+    #[test]
+    fn the_frame_fraction_stays_exact_at_any_frame_number() {
+        // frame * 0.6180339887 in 24-bit fixed point, from the integers
+        let exact = |f: u32| (((u64::from(f) * 0x9e37_79b9) & 0xffff_ffff) >> 8) as u32;
+        for f in [0, 1, 2, 7, 1 << 20, (1 << 24) + 3, 123_456_789, u32::MAX - 1, u32::MAX] {
+            assert_eq!(frame_fraction(f), exact(f), "frame {f}");
+            assert!(frame_fraction(f) < 1 << 24);
+        }
+        // one frame later is always the golden ratio conjugate further
+        // (10 368 889.6 of 2^24), to the rounding of the truncated bits
+        for f in [0u32, 5, 1 << 24, 3_000_000_000, u32::MAX] {
+            let step = frame_fraction(f.wrapping_add(1)).wrapping_sub(frame_fraction(f)) & 0xff_ffff;
+            assert!((10_368_889..=10_368_891).contains(&step), "frame {f}: {step}");
+        }
     }
 
     #[test]
