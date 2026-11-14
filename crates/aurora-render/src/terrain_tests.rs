@@ -767,7 +767,13 @@ fn shadow_surface(vi: u32, sample_index: u32) -> TerrainShadowOut {
         usage: wgpu::BufferUsages::UNIFORM,
         mapped_at_creation: false,
     });
-    let shadow_group = crate::renderer::shadow_bind_group(&device, &shadow_layout, &shadow_buffer, &clamp_sampler);
+    let shadow_st = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: false,
+    });
+    let shadow_group = crate::renderer::shadow_bind_group(&device, &shadow_layout, &shadow_buffer, &shadow_st, &clamp_sampler);
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &[Some(&layout), None, None, Some(&shadow_layout)],
