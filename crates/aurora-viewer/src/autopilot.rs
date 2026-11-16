@@ -822,6 +822,7 @@ fn can_takeoff_with_unknown_policy(world: &crate::world::World, allow_unknown: b
 /// LLAgent::canFly (indra/newview/llagent.cpp): RLVa @fly, then the land
 /// rule; sitting is not part of it. The movement window's Fly button is
 /// enabled by it (LLFloaterMove::sUpdateMovementStatus).
+#[cfg(test)]
 pub fn can_fly(world: &crate::world::World) -> bool {
     can_fly_with_unknown_policy(world, false)
 }

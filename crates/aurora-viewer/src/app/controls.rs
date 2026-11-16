@@ -20,8 +20,6 @@ impl App {
             views: &self.settings.camera_views,
             flying: self.world.agent.flying,
             always_run: self.always_run,
-            fly_locked: !crate::autopilot::can_fly(&self.world),
-            run_locked: self.world.rlva.has("alwaysrun"),
             seated: self.world.agent.seated,
             // the answers `set_always_run`, `toggle_fly` and the send
             // boundary give, so a button never promises what they refuse
