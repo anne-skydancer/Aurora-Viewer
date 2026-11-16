@@ -3558,6 +3558,7 @@ impl Impostors {
     }
 
     /// The pictures are drawn with the scene's own shaders.
+    /// `soft`: with the soft shadows' path (`common_shader_for`).
     fn shader_source(features: wgpu::Features, soft: bool) -> String {
         format!(
             "{}\n{}\n{}",

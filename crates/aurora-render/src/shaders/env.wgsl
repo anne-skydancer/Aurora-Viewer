@@ -959,7 +959,9 @@ fn terrain_color(in: TerrainOut) -> vec3<f32> {
     }
     if (is_classic_sky()) {
         let a = ll_atmos(in.world_pos - frame.camera_pos.xyz);
-        let hazed = ll_haze(ll_classic_diffuse(albedo, n, in.world_pos, sh, in.clip.xy, a) + wet_light + albedo*water_caustic_light(in.world_pos,n)*sh, a);
+        // (a classic sky's `sh` is not lifted: `sun_shadow` leaves that to
+        // `classic_shadowed`, so the caustics lift it here)
+        let hazed = ll_haze(ll_classic_diffuse(albedo, n, in.world_pos, sh, in.clip.xy, a) + wet_light + albedo*water_caustic_light(in.world_pos,n)*shadow_lift(sh), a);
         var color=hazed*water_scene_light(in.world_pos);
         if(water_fogs_source(in.world_pos)){color=apply_fog(color,in.world_pos);}
         return light_tiles_checked(debug_view(color, in.world_pos, n, dist, in.clip.xy), in.world_pos, in.clip.xy);
@@ -996,7 +998,8 @@ fn terrain_pbr_shaded(in: TerrainPbrOut) -> Shaded {
         color = (ll_classic_pbr(material.color.rgb, metal, rough, ao, n, v, in.world_pos, sh, in.clip.xy, a)
             + emissive) * ll_final_scale()
             + ll_classic_pbr_local(material.color.rgb, metal, rough, n, v, in.world_pos, in.clip.xy);
-        color = ll_haze(color + material.color.rgb * water_caustic_light(in.world_pos, n) * sh, a);
+        // (the caustics lift the classic sky's shadow themselves, as above)
+        color = ll_haze(color + material.color.rgb * water_caustic_light(in.world_pos, n) * shadow_lift(sh), a);
         if (water_fogs_source(in.world_pos)) {
             color = apply_fog(color * water_scene_light(in.world_pos), in.world_pos);
         }
