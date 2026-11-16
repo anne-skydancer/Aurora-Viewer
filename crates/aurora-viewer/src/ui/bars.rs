@@ -2659,12 +2659,12 @@ pub fn run_command(ctx: &egui::Context, cmd: &str, panels: &mut Panels) -> BarAc
         "destinations" => toggle(super::destinations::WINDOW, &mut panels.destinations),
         // Floater.Toggle fs_voice_controls
         "voice" => toggle(super::voice_controls::WINDOW, &mut panels.voice_controls),
+        // Floater.Toggle fs_posestand
+        "pose_stand" => toggle(super::pose_stand::WINDOW, &mut panels.pose_stand),
         // Floater.ToggleOrBringToFront omnifilter
         "omnifilter" => toggle(super::omnifilter::WINDOW, &mut panels.omnifilter),
         // Floater.Toggle conversation
         "conversation_log" => toggle(super::conversation_log::WINDOW, &mut panels.conversation_log),
-        // Floater.Toggle fs_posestand
-        "pose_stand" => toggle(super::pose_stand::WINDOW, &mut panels.pose_stand),
         // the Legacy Viewer's Statistics (Floater.Toggle stats) opens
         // Aurora's Performance window
         "performance" | "statistics" => toggle("perf", &mut panels.perf),
@@ -2782,9 +2782,9 @@ fn command_active(cmd: &str, panels: &Panels, flying: bool, seated: bool, mousel
         "avatar" => panels.avatar_welcome,
         "destinations" => panels.destinations,
         "voice" => panels.voice_controls,
+        "pose_stand" => panels.pose_stand,
         "omnifilter" => panels.omnifilter,
         "conversation_log" => panels.conversation_log,
-        "pose_stand" => panels.pose_stand,
         "performance" | "statistics" => panels.perf,
         "snapshot" => panels.snapshot,
         "beacons" => panels.beacons,
