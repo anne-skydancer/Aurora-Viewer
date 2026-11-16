@@ -15118,6 +15118,7 @@ capture-360-saved = Enregistré : { $name }
 capture-360-failed = L'image 360° n'a pas pu être créée.
 capture-360-save-failed = L'image 360° n'a pas pu être enregistrée : { $error }
 capture-360-save-dialog = Enregistrer l'image 360°
+
 wearable-favorites-all = Tous les favoris
 wearable-favorites-empty = Faites glisser les objets ici pour les ajouter à la liste.
 wearable-favorites-no-match = Aucun élément ne correspond.

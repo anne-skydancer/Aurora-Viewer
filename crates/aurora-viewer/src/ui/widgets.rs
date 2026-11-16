@@ -2223,13 +2223,13 @@ pub fn segmented_size(ui: &egui::Ui, options: &[(&str, bool)]) -> Vec2 {
 /// the segment chosen before, as the poser's tracks do (`tracks::icon_track`;
 /// none under Reduce animations). Returns true when the selection changed.
 pub fn segmented(ui: &mut egui::Ui, p: &Palette, selected: &mut usize, options: &[(&str, bool)]) -> bool {
-    segmented_core(ui, p, selected, options, &[], SEGMENT_H)
+    segmented_track(ui, p, selected, options, &[], SEGMENT_H)
 }
 
 /// `segmented` with a track `height` tall, to line it up with the fields
 /// and buttons of a taller row.
 pub fn segmented_tall(ui: &mut egui::Ui, p: &Palette, selected: &mut usize, options: &[(&str, bool)], height: f32) -> bool {
-    segmented_core(ui, p, selected, options, &[], height)
+    segmented_track(ui, p, selected, options, &[], height)
 }
 
 /// `segmented` with some options out of reach: `disabled[i]` is the tooltip
@@ -2242,10 +2242,10 @@ pub fn segmented_with_disabled(
     options: &[(&str, bool)],
     disabled: &[Option<&str>],
 ) -> bool {
-    segmented_core(ui, p, selected, options, disabled, SEGMENT_H)
+    segmented_track(ui, p, selected, options, disabled, SEGMENT_H)
 }
 
-fn segmented_core(
+fn segmented_track(
     ui: &mut egui::Ui,
     p: &Palette,
     selected: &mut usize,
@@ -2259,6 +2259,7 @@ fn segmented_core(
     let (track, _) = ui.allocate_exact_size(size, Sense::hover());
     let radius = ui.visuals().widgets.inactive.corner_radius;
     ui.painter().rect_filled(track, radius, p.bar);
+    let off = |i: usize| disabled.get(i).copied().flatten();
     let mut rects = Vec::with_capacity(widths.len());
     let mut x = track.left() + SEGMENT_PAD;
     for w in &widths {
@@ -2269,8 +2270,9 @@ fn segmented_core(
         x += w;
     }
     // the lit face, its edges sliding from the segment chosen before (kept
-    // from the track's left, so that moving the window does not slide it)
-    if let Some(chosen) = rects.get(*selected) {
+    // from the track's left, so that moving the window does not slide it);
+    // none on a chosen option that is out of reach
+    if let Some(chosen) = rects.get(*selected).filter(|_| off(*selected).is_none()) {
         let id = ui.scope_id().with(("segmented-slide", options.len(), options.first().map(|o| o.0)));
         let time = ui.style().animation_time;
         let left = ui
@@ -2289,7 +2291,7 @@ fn segmented_core(
     let mut changed = false;
     for (i, ((label, accent), galley)) in options.iter().zip(galleys).enumerate() {
         let rect = rects[i];
-        let off = disabled.get(i).copied().flatten();
+        let off = off(i);
         let resp = ui.interact(
             rect,
             ui.scope_id().with(("segmented", i, *label)),

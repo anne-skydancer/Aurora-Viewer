@@ -15109,6 +15109,7 @@ capture-360-saved = Saved { $name }
 capture-360-failed = The 360° image could not be made.
 capture-360-save-failed = The 360° image could not be saved: { $error }
 capture-360-save-dialog = Save the 360° image
+
 wearable-favorites-all = All Favorites
 wearable-favorites-empty = Drag wearable items here to add to list.
 wearable-favorites-no-match = No matching items found.
