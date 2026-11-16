@@ -1103,8 +1103,8 @@ struct Pipelines {
     /// water with the blended faces under it, writing no depth
     /// (`DrawLists::particles_under`).
     particles_under: Option<wgpu::RenderPipeline>,
-    /// Their depth alone, from 1/255 of alpha, into the single-sampled scene
-    /// depth, and into the multisampled one (MSAA).
+    /// Their depth alone, after the colour: into the single-sampled scene
+    /// depth, and with MSAA into the multisampled one too.
     particles_under_depth_ss: Option<wgpu::RenderPipeline>,
     particles_under_depth_msaa: Option<wgpu::RenderPipeline>,
     water_particles: wgpu::RenderPipeline,
@@ -5510,9 +5510,9 @@ impl Backend {
             ..base("particles", "vs_particle", "fs_particle")
         });
         // POOL_ALPHA_PRE_WATER for the particles: the far side of the
-        // surface, their colour writing no depth (as `blend_under`), the soft
-        // fade kept on a copy of the scene depth (frame group `under`); their
-        // depth, from 1/255 of alpha, follows in the depth passes
+        // surface, no depth in the colour (as `blend_under`), their depth
+        // from 1/255 of alpha in the depth passes, the soft fade kept on a
+        // copy of the scene depth (frame group `under`)
         // (not made without the interleave)
         let particles_under = crate::particle_interleave().then(|| {
             pipe(PipeDesc {
@@ -5526,33 +5526,23 @@ impl Backend {
                 ..base("particles under water", "vs_particle", "fs_particle")
             })
         });
-        let particles_under_depth_ss = crate::particle_interleave().then(|| {
+        let particles_under_depth = |label: &'static str, samples: u32| {
             pipe(PipeDesc {
                 vb: Vb::Particle,
                 cull: None,
                 fs: Some("fs_particle_depth"),
                 blend: None,
-                samples: 1,
+                samples,
                 format: None,
                 depth_write: true,
                 depth_compare: wgpu::CompareFunction::Greater,
                 constants: &[("WATER_CLIP", 2.0), ("PART_MIN_ALPHA", 0.004)],
-                ..base("particles under water depth", "vs_particle", "fs_particle_depth")
+                ..base(label, "vs_particle", "fs_particle_depth")
             })
-        });
-        let particles_under_depth_msaa = (crate::particle_interleave() && samples > 1).then(|| {
-            pipe(PipeDesc {
-                vb: Vb::Particle,
-                cull: None,
-                fs: Some("fs_particle_depth"),
-                blend: None,
-                format: None,
-                depth_write: true,
-                depth_compare: wgpu::CompareFunction::Greater,
-                constants: &[("WATER_CLIP", 2.0), ("PART_MIN_ALPHA", 0.004)],
-                ..base("particles under water msaa depth", "vs_particle", "fs_particle_depth")
-            })
-        });
+        };
+        let particles_under_depth_ss = crate::particle_interleave().then(|| particles_under_depth("particles under water depth", 1));
+        let particles_under_depth_msaa =
+            (crate::particle_interleave() && samples > 1).then(|| particles_under_depth("particles under water msaa depth", samples));
         let water_particles = pipe(PipeDesc {
             vb: Vb::None,
             cull: None,
@@ -11430,8 +11420,9 @@ impl Backend {
         let under_stride = std::mem::size_of::<DrawIndexedIndirect>() as u64;
         if n_under > 0 || n_part_under > 0 {
             // (the particles under the water, between the faces: their soft
-            // fade reads a copy of the scene depth, the single-sampled one
-            // with MSAA. The meshes keep the frame group without a depth.)
+            // fade reads the scene depth, which the depth passes write.
+            // Without MSAA it is copied first, with it the single-sampled
+            // one serves. The meshes keep the frame group without a depth.)
             if n_part_under > 0
                 && let Some((copy, _)) = &self.targets.depth_copy
             {
@@ -11441,13 +11432,13 @@ impl Backend {
                     self.targets.depth_ss_tex.size(),
                 );
             }
-            // the depth of the faces, and of the particles (`particles`, the
-            // pipeline made for this depth's samples), in a pass of its own
+            // the faces' depth, then the particles' (their order does not
+            // matter: the nearest depth stays)
             let under_depth = |encoder: &mut wgpu::CommandEncoder,
                                label: &'static str,
                                view: &wgpu::TextureView,
                                pipes: &SidedPipelines,
-                               particles: Option<&wgpu::RenderPipeline>| {
+                               particle_pipe: Option<&wgpu::RenderPipeline>| {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(label),
                     color_attachments: &[],
@@ -11465,8 +11456,7 @@ impl Backend {
                 });
                 bind_mesh(&mut pass, &self.groups.a);
                 draw_under(&mut pass, pipes, rg.blend_under);
-                if let Some(pipe) = particles.filter(|_| n_part_under > 0) {
-                    // (their order does not matter: the nearest depth stays)
+                if let Some(pipe) = particle_pipe.filter(|_| n_part_under > 0) {
                     pass.set_vertex_buffer(PARTICLE_SLOT, self.particle_buffer.slice(..));
                     draw_particles_under(&mut pass, pipe, n_particles..n_particles + n_part_under, &self.groups.a);
                 }
