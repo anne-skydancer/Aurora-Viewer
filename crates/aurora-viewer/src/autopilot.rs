@@ -830,14 +830,6 @@ fn can_fly_with_unknown_policy(world: &crate::world::World, allow_unknown: bool)
     !world.rlva.has("fly") && land_allows_flight(world, allow_unknown, allow_unknown)
 }
 
-/// enable_fly_land (indra/newview/llviewermenu.cpp): flying already, or
-/// LLAgent::enableFlying (canFly and not sitting). Landing is always allowed.
-/// The Me menu's merged Fly / Stop flying item and the self context menu use
-/// it; the Fly toolbar button uses `can_takeoff` alone (`Agent.enableFlying`).
-pub fn fly_or_land_enabled(world: &crate::world::World) -> bool {
-    world.agent.flying || can_takeoff(world)
-}
-
 /// The land part of LLAgent::canFly (indra/newview/llagent.cpp): the fly
 /// override and a god first, then the region's no-fly, then the parcel's, which its
 /// owner and the owning group's flight managers may ignore. RLVa @fly and
@@ -1828,38 +1820,37 @@ mod tests {
             ..Default::default()
         };
         world.parcel = Some(std::sync::Arc::new(allow));
-        assert!(can_fly(&world) && can_takeoff(&world) && fly_or_land_enabled(&world));
+        assert!(can_fly(&world) && can_takeoff(&world));
         // sitting: the window's button stays, the toolbar and menus grey
         world.agent.seated = true;
-        assert!(can_fly(&world) && !can_takeoff(&world) && !fly_or_land_enabled(&world));
+        assert!(can_fly(&world) && !can_takeoff(&world));
         world.agent.seated = false;
         // parcel no-fly
         world.parcel = Some(std::sync::Arc::new(aurora_net::ParcelInfo::default()));
-        assert!(!can_fly(&world) && !can_takeoff(&world) && !fly_or_land_enabled(&world));
+        assert!(!can_fly(&world) && !can_takeoff(&world));
         // owner exception
         std::sync::Arc::make_mut(world.parcel.as_mut().unwrap()).owner_id = world.agent_id;
-        assert!(can_fly(&world) && fly_or_land_enabled(&world));
+        assert!(can_fly(&world));
         std::sync::Arc::make_mut(world.parcel.as_mut().unwrap()).owner_id = uuid::Uuid::nil();
         // already flying on no-fly land: the menus still land, the toolbar
         // button follows Agent.enableFlying
         world.agent.flying = true;
-        assert!(!can_takeoff(&world) && fly_or_land_enabled(&world));
+        assert!(!can_takeoff(&world));
         world.agent.flying = false;
         // region block-fly, even on a flyable parcel
         let mut blocked = (*info).clone();
         blocked.region_flags |= aurora_net::region_flags::BLOCK_FLY;
         world.apply(NetEvent::RegionHandshake(std::sync::Arc::new(blocked)));
         std::sync::Arc::make_mut(world.parcel.as_mut().unwrap()).flags = aurora_net::parcel_flags::ALLOW_FLY;
-        assert!(!can_fly(&world) && !fly_or_land_enabled(&world));
+        assert!(!can_fly(&world));
         // fly override opens both
         world.fly_override = true;
-        assert!(can_fly(&world) && can_takeoff(&world) && fly_or_land_enabled(&world));
+        assert!(can_fly(&world) && can_takeoff(&world));
         // RLVa @fly beats the override
         world.rlva.configure(true);
         world.rlva_console_input("@fly=n");
-        assert!(!can_fly(&world) && !can_takeoff(&world) && !fly_or_land_enabled(&world));
+        assert!(!can_fly(&world) && !can_takeoff(&world));
         world.agent.flying = true;
-        assert!(fly_or_land_enabled(&world), "a flight can always be ended");
     }
 
     /// FSAlwaysFly in LLAgent::canFly: no-fly land no longer stops a takeoff

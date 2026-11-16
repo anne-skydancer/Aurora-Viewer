@@ -1,6 +1,60 @@
 //! RLVa preference and action integration, shared by every UI layout.
+use super::own_motion::temprun_resync;
 use super::*;
 use uuid::Uuid;
+
+/// The mini-map window across @showminimap, as the static `fPrevVisibile` of
+/// RlvUIEnabler::onToggleShowMinimap (rlvui.cpp): hidden while the
+/// restriction holds, shown again at its release only if it was shown when
+/// the restriction came. The world map (onToggleShowWorldMap) and the
+/// inventory (RlvBehaviourToggleHandler<RLV_BHVR_SHOWINV>::onCommandToggle,
+/// rlvhandler.cpp) are closed and stay closed after the release.
+#[derive(Default)]
+pub(super) struct HiddenMinimap(Option<bool>);
+
+impl HiddenMinimap {
+    pub(super) fn apply(&mut self, restricted: bool, open: &mut bool) {
+        match (restricted, self.0) {
+            (true, None) => self.0 = Some(std::mem::take(open)),
+            (true, Some(_)) => *open = false,
+            (false, Some(was_open)) => {
+                self.0 = None;
+                *open |= was_open;
+            }
+            (false, None) => {}
+        }
+    }
+}
+
+/// The windows @showinv, @showminimap and @showworldmap hide never show,
+/// whatever asked for them: run every frame, and again once the bars have
+/// drawn, whose buttons and menus open a window in the frame it is drawn.
+pub(super) fn keep_windows_closed(rlva: &crate::world::rlva::Rlva, panels: &mut ui::Panels) {
+    panels.inventory &= !rlva.has("showinv");
+    panels.minimap &= !rlva.has("showminimap");
+    panels.world_map &= !rlva.has("showworldmap");
+}
+
+/// RlvActions::canHighlightTransparent (rlvactions.cpp) refuses the
+/// highlight under @edit and @showloc, and the @viewtransparent toggle
+/// handler (rlvhandler.cpp) turns it off: the three keep it off here.
+fn can_highlight_transparent(rlva: &crate::world::rlva::Rlva) -> bool {
+    !["viewtransparent", "edit", "showloc"].iter().any(|b| rlva.has(b))
+}
+
+/// A shortcut the restrictions refuse outright, with no notice:
+/// RlvUIEnabler::filterFloaterGeneric (rlvui.cpp) validates the inventory,
+/// mini-map and world map floaters without a message, and
+/// LLViewHighlightTransparent (llviewermenu.cpp) leaves the highlight off.
+fn refuses_shortcut(rlva: &crate::world::rlva::Rlva, action: Action) -> bool {
+    match action {
+        Action::Inventory | Action::NewInventoryWindow => rlva.has("showinv"),
+        Action::Minimap => rlva.has("showminimap"),
+        Action::WorldMap => rlva.has("showworldmap"),
+        Action::ShowTransparency => !can_highlight_transparent(rlva),
+        _ => false,
+    }
+}
 
 impl App {
     pub(super) fn camera_aspect(&self) -> f32 {
@@ -67,6 +121,7 @@ impl App {
             login_locked,
         );
         self.world.eep.rlva_locked = self.world.rlva.has("setenv");
+        self.world.rlva_yield_environment();
         self.world.inventory.rlva_preview_mask = self.world.rlva.preview_mask();
         self.script_editors.rlva_hidden = self.world.rlva.has("viewscript");
         // An outfit change is over once its detaches have landed too: the
@@ -128,65 +183,76 @@ impl App {
         // Protocol replies are not user chat and must bypass chat redirection
         // and sendchannel, as RlvUtil::sendChatReply does.
         for command in std::mem::take(&mut self.world.rlva.out) {
+            if let NetCommand::ChatReply { message, channel } = &command {
+                self.rlva_selftest.runner.reply(*channel, message);
+            }
             if matches!(command, NetCommand::ChatReply { .. } | NetCommand::ImReply { .. }) {
                 self.net.send(command);
             } else {
                 self.send(command);
             }
         }
+        self.rlva_minimap
+            .apply(self.world.rlva.has("showminimap"), &mut self.panels.minimap);
+        keep_windows_closed(&self.world.rlva, &mut self.panels);
         if self.world.rlva.has("showinv") {
-            self.panels.inventory = false;
             self.inventory_ui.close_additional_window();
         }
-        if self.world.rlva.has("showminimap") {
-            self.panels.minimap = false;
-        }
-        if self.world.rlva.has("showworldmap") {
-            self.panels.world_map = false;
-        }
-        // RlvUIEnabler::onToggleMovement (indra/newview/rlvui.cpp) runs when
-        // fly, alwaysrun or temprun is added or removed. A flight ends once,
-        // when `@fly` appears (any source: attachment, console, relay, or
-        // restored after a relog), the way "Stop flying" ends it. Not every
-        // frame: the object holding `@fly=n` may still force flight itself
-        // with `@fly:true=force`. Always run and temp run stay cleared while
-        // held, as before.
-        let fly_held = self.world.rlva.has("fly");
-        let clear = MovementClear::new(
-            self.rlva_fly_held,
-            (fly_held, self.world.rlva.has("alwaysrun"), self.world.rlva.has("temprun")),
-            (self.world.agent.flying, self.always_run, self.temp_run.is_some()),
-        );
-        self.rlva_fly_held = fly_held;
-        if clear.fly {
-            self.toggle_fly();
-        }
-        if clear.always_run {
+        if self.world.rlva.has("alwaysrun") && self.always_run {
             self.set_always_run(false);
         }
-        if clear.temp_run {
-            self.temp_run = None;
+        // RlvUIEnabler::onToggleMovement: clearTempRun tells the simulator,
+        // which would otherwise keep running with nothing left to stop it.
+        let temprun = self.world.rlva.has("temprun");
+        let ended = temprun && self.temp_run.take().is_some();
+        let changed = temprun != std::mem::replace(&mut self.rlva_temprun, temprun);
+        if temprun_resync(ended, changed, self.autopilot.as_ref().is_some_and(|a| a.run)) {
+            self.send(NetCommand::SetAlwaysRun(self.walk_run()));
+        }
+        // RlvUIEnabler::onToggleMovement (rlvui.cpp): @fly lands a flight
+        // under way (gAgent.setFlying(false)), not only refuses a takeoff. It
+        // runs when the restriction appears, not every frame: the object
+        // holding `@fly=n` may still force flight with `@fly:true=force`.
+        let fly_held = self.world.rlva.has("fly");
+        let lands = fly_restriction_lands(self.rlva_fly_held, fly_held, self.world.agent.flying);
+        self.rlva_fly_held = fly_held;
+        if lands {
+            self.world.agent.flying = false;
         }
         let invalid: Vec<_> = self
             .build
             .selection
             .iter()
-            .filter(|key| self.world.objects.index_of(key).is_none_or(|i| !self.world.rlva_can_edit(i)))
+            .filter(|key| {
+                self.world
+                    .objects
+                    .index_of(key)
+                    .is_none_or(|i| !crate::build::rlva_selectable(&self.world, i))
+            })
             .copied()
             .collect();
         if !invalid.is_empty() {
-            self.build.deselect(&self.world, &invalid);
+            self.build.drop_selected(&self.world, &invalid);
         }
         let locked_hud = self.world.rlva_has_locked_hud();
         if locked_hud {
             self.settings.show_huds = true;
         }
+        self.world.rlva_limit_hud_zoom(locked_hud);
         if self.world.rlva.has("viewwireframe") || locked_hud {
             self.settings.debug.wireframe = false;
         }
-        if self.world.rlva.has("viewtransparent") || self.world.rlva.has("edit") || self.world.rlva.has("showloc") {
+        if !self.rlva_can_highlight_transparent() {
             self.settings.debug.show_alpha = false;
         }
+    }
+
+    pub(super) fn rlva_can_highlight_transparent(&self) -> bool {
+        can_highlight_transparent(&self.world.rlva)
+    }
+
+    pub(super) fn rlva_refuses_shortcut(&self, action: Action) -> bool {
+        refuses_shortcut(&self.world.rlva, action)
     }
 
     fn demo_rlva(&mut self) {
@@ -196,6 +262,10 @@ impl App {
         let Ok(mode) = std::env::var("AURORA_DEMO_RLVA") else {
             return;
         };
+        // (the self-test's own scenario: app/rlva_selftest.rs)
+        if mode == "selftest" {
+            return;
+        }
         // Native updates may run twice before the next rendered frame.
         // A fixture's force action must be delivered only once per frame.
         if self.demo_rlva_frame == Some(self.frame_count) {
@@ -215,7 +285,10 @@ impl App {
             if scenario == "baseline"
                 || scenario.starts_with("sphere-")
                 || scenario.starts_with("camera-")
-                || matches!(scenario, "overlay" | "textures" | "silhouette" | "self" | "head" | "resolution")
+                || matches!(
+                    scenario,
+                    "overlay" | "textures" | "silhouette" | "self" | "head" | "resolution" | "interact" | "fartouch"
+                )
             {
                 // Keep the avatar and the world visible in offline visual
                 // comparisons; a conversation otherwise covers the subject.
@@ -232,6 +305,9 @@ impl App {
             let message = if scenario == "baseline" {
                 self.panels.settings = false;
                 "@clear".to_owned()
+            } else if scenario == "interact" || scenario == "fartouch" {
+                self.panels.settings = false;
+                format!("@{scenario}=n")
             } else if scenario == "camera-prefs" {
                 self.options_ui.page = ui::options::Page::Camera;
                 self.options_ui.tab = 0;
@@ -242,6 +318,14 @@ impl App {
                     "@setcam_focus:{};4;0/-1/0=force,setcam_fovmin:0.6=n,setcam_fovmax:0.9=n",
                     crate::demo::DEMO_LOUP
                 )
+            } else if let Some(run) = scenario.strip_prefix("run-") {
+                self.panels.settings = false;
+                match run {
+                    "temprun" => "@temprun=n".to_owned(),
+                    "alwaysrun" => "@alwaysrun=n".to_owned(),
+                    "both" => "@temprun=n,alwaysrun=n".to_owned(),
+                    _ => "@clear".to_owned(),
+                }
             } else if scenario == "rename" {
                 self.settings.rlva.shared_wear = false;
                 self.settings.rlva.auto_rename = true;
@@ -428,6 +512,31 @@ impl App {
                 self.world.rlva.has("unsit"),
                 self.world.rlva.has("sendchat")
             );
+        }
+        if mode.starts_with("run-") {
+            // A double tap through the real input path, held until frame 750;
+            // `run-autopilot` runs to a point and @temprun comes and goes;
+            // `run-autopilot-always` has Always run on and @alwaysrun comes.
+            let autopilot = mode.starts_with("run-autopilot");
+            let always = mode == "run-autopilot-always";
+            match self.frame_count {
+                715 if always => self.set_always_run(true),
+                720 if autopilot => self.walk_to(self.world.agent.position + Vec3::X * 25.0, true),
+                730 if always => self.rlva_demo_message("@alwaysrun=n".to_owned()),
+                730 if autopilot => self.rlva_demo_message("@temprun=n".to_owned()),
+                745 if autopilot && !always => self.rlva_demo_message("@temprun=y".to_owned()),
+                720 => self.walk_tap(0, true),
+                722 if !autopilot => {
+                    // over NUDGE_TIME is no double tap: a slow frame, not a refusal
+                    let gap = self.last_tap.map_or(0.0, |(_, at)| at.elapsed().as_secs_f32());
+                    log::info!("RLVa demo: {mode} tap gap {gap:.3} s");
+                    self.walk_tap(0, true);
+                }
+                721 | 750 if !autopilot => self.walk_tap(0, false),
+                730 if mode == "run-late" => self.rlva_demo_message("@temprun=n".to_owned()),
+                740 | 749 => log::info!("RLVa demo: {mode} temp_run={}, running={}", self.temp_run.is_some(), self.running()),
+                _ => {}
+            }
         }
         if mode == "sitting" && self.frame_count == 740 {
             self.rlva_demo_message("@sitground=force".to_owned());
@@ -773,12 +882,15 @@ impl App {
                 continue;
             }
             if c.behaviour == "getheightoffset" {
-                if c.option.is_empty()
-                    && let Param::Reply(channel) = c.param
-                {
-                    self.world
-                        .rlva
-                        .reply(channel, &c.behaviour, format!("{:.2}", self.world.hover_height.value() * 100.0));
+                if let Param::Reply(channel) = c.param {
+                    // an option fails the query, which still answers, with
+                    // nothing (RlvReplyHandler<RLV_BHVR_GETHEIGHTOFFSET>)
+                    let text = if c.option.is_empty() {
+                        format!("{:.2}", self.world.hover_height.value() * 100.0)
+                    } else {
+                        String::new()
+                    };
+                    self.world.rlva.reply(channel, &c.behaviour, text);
                 }
                 continue;
             }
@@ -871,59 +983,116 @@ impl App {
     }
 }
 
-/// What RlvUIEnabler::onToggleMovement clears. `held` and `state` are
-/// (fly, alwaysrun, temprun); the flight ends only when `@fly` was not held on
-/// the previous update, the run states while their restriction is held.
-#[derive(Debug, PartialEq, Eq)]
-struct MovementClear {
-    fly: bool,
-    always_run: bool,
-    temp_run: bool,
-}
-
-impl MovementClear {
-    fn new(fly_was_held: bool, held: (bool, bool, bool), state: (bool, bool, bool)) -> Self {
-        Self {
-            fly: held.0 && !fly_was_held && state.0,
-            always_run: held.1 && state.1,
-            temp_run: held.2 && state.2,
-        }
-    }
+/// Whether `@fly` appearing ends a flight under way: only on the update where
+/// the restriction is new.
+fn fly_restriction_lands(was_held: bool, held: bool, flying: bool) -> bool {
+    held && !was_held && flying
 }
 
 #[cfg(test)]
-mod movement_tests {
-    use super::MovementClear;
+mod tests {
+    use super::*;
 
+    fn restricted(commands: &str) -> crate::world::rlva::Rlva {
+        let mut rlva = crate::world::rlva::Rlva::default();
+        rlva.configure(true);
+        assert!(rlva.receive(&aurora_net::ChatMessage {
+            from_name: "Fixture".into(),
+            source_id: Uuid::from_u128(1),
+            owner_id: Uuid::nil(),
+            source_type: aurora_net::ChatSourceType::Object,
+            chat_type: aurora_net::ChatType::OwnerSay,
+            region: None,
+            position: Vec3::ZERO,
+            message: commands.into(),
+        }));
+        rlva
+    }
+
+    /// RlvUIEnabler::onToggleShowMinimap: `fPrevVisibile`.
     #[test]
-    fn fly_restriction_appearing_lands_a_flying_avatar() {
-        assert!(MovementClear::new(false, (true, false, false), (true, false, false)).fly);
+    fn rlva_minimap_comes_back_at_the_release_only_if_it_was_open() {
+        for was_open in [true, false] {
+            let mut hidden = HiddenMinimap::default();
+            let mut open = was_open;
+            hidden.apply(false, &mut open);
+            assert_eq!(open, was_open, "no restriction: the window is the user's");
+            hidden.apply(true, &mut open);
+            assert!(!open);
+            // whatever opens it while the restriction holds, it closes
+            open = true;
+            hidden.apply(true, &mut open);
+            assert!(!open);
+            hidden.apply(false, &mut open);
+            assert_eq!(open, was_open);
+            // the release is remembered once: closing it afterwards holds
+            open = false;
+            hidden.apply(false, &mut open);
+            assert!(!open);
+        }
     }
 
     #[test]
-    fn nothing_lands_when_not_flying() {
-        assert!(!MovementClear::new(false, (true, false, false), (false, false, false)).fly);
+    fn rlva_hidden_windows_open_by_no_path_and_their_shortcuts_do_nothing() {
+        let all = |open: bool| {
+            let mut panels = ui::Panels::from_settings(&crate::settings::Settings::default());
+            (panels.inventory, panels.minimap, panels.world_map) = (open, open, open);
+            panels
+        };
+        let free = crate::world::rlva::Rlva::default();
+        let mut panels = all(true);
+        keep_windows_closed(&free, &mut panels);
+        assert!(panels.inventory && panels.minimap && panels.world_map);
+        for (command, shortcuts) in [
+            ("@showinv=n", &[Action::Inventory, Action::NewInventoryWindow][..]),
+            ("@showminimap=n", &[Action::Minimap][..]),
+            ("@showworldmap=n", &[Action::WorldMap][..]),
+        ] {
+            let rlva = restricted(command);
+            let mut panels = all(true);
+            keep_windows_closed(&rlva, &mut panels);
+            assert_eq!(
+                (panels.inventory, panels.minimap, panels.world_map),
+                (command != "@showinv=n", command != "@showminimap=n", command != "@showworldmap=n"),
+                "{command}"
+            );
+            // it closes, it never opens
+            let mut panels = all(false);
+            keep_windows_closed(&rlva, &mut panels);
+            assert!(!panels.inventory && !panels.minimap && !panels.world_map);
+            for action in [Action::Inventory, Action::NewInventoryWindow, Action::Minimap, Action::WorldMap] {
+                assert_eq!(
+                    refuses_shortcut(&rlva, action),
+                    shortcuts.contains(&action),
+                    "{command}: {action:?}"
+                );
+                assert!(!refuses_shortcut(&free, action));
+            }
+        }
+    }
+
+    /// RlvActions::canHighlightTransparent and the @viewtransparent toggle.
+    #[test]
+    fn rlva_transparency_highlight_is_refused_under_edit_showloc_and_viewtransparent() {
+        let free = crate::world::rlva::Rlva::default();
+        assert!(can_highlight_transparent(&free) && !refuses_shortcut(&free, Action::ShowTransparency));
+        for command in ["@edit=n", "@showloc=n", "@viewtransparent=n"] {
+            let rlva = restricted(command);
+            assert!(!can_highlight_transparent(&rlva), "{command}");
+            assert!(refuses_shortcut(&rlva, Action::ShowTransparency), "{command}");
+        }
+        let other = restricted("@showinv=n");
+        assert!(can_highlight_transparent(&other));
     }
 
     #[test]
-    fn the_holder_may_force_flight_on_the_following_frames() {
-        // @fly=n already held, then @fly:true=force: no new edge
-        assert!(!MovementClear::new(true, (true, false, false), (true, false, false)).fly);
-    }
-
-    #[test]
-    fn removing_the_restriction_forces_nothing() {
-        assert!(!MovementClear::new(true, (false, false, false), (true, false, false)).fly);
-        assert!(!MovementClear::new(false, (false, false, false), (true, false, false)).fly);
-    }
-
-    #[test]
-    fn run_restrictions_clear_their_own_state() {
-        let c = MovementClear::new(true, (false, true, true), (false, true, true));
-        assert_eq!((c.fly, c.always_run, c.temp_run), (false, true, true));
-        let c = MovementClear::new(true, (false, true, true), (true, false, false));
-        assert_eq!((c.fly, c.always_run, c.temp_run), (false, false, false));
-        let c = MovementClear::new(true, (false, false, false), (true, true, true));
-        assert_eq!((c.fly, c.always_run, c.temp_run), (false, false, false));
+    fn fly_restriction_lands_a_flight_once_when_it_appears() {
+        // RlvUIEnabler::onToggleMovement runs on a change only: the holder of
+        // `@fly=n` may still force flight with `@fly:true=force` afterwards.
+        assert!(fly_restriction_lands(false, true, true));
+        assert!(!fly_restriction_lands(false, true, false));
+        assert!(!fly_restriction_lands(true, true, true));
+        assert!(!fly_restriction_lands(true, false, true));
+        assert!(!fly_restriction_lands(false, false, true));
     }
 }
