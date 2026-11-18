@@ -19748,7 +19748,11 @@ impl App {
                             self.panels.people = true;
                             self.panels.people_tab = tab;
                         }
-                        ui::chat::ConvAction::Profile(id) => self.profile_ui.open(&mut self.world, id),
+                        // a conversation's header, members and participants name their people
+                        // whoever is around (`chat::conversation_names`)
+                        ui::chat::ConvAction::Profile(id) => {
+                            self.profile_ui.open_in(&mut self.world, crate::world::names::NameScope::Roster, id)
+                        }
                         ui::chat::ConvAction::Contacts(c) => contact_actions.push(c),
                         ui::chat::ConvAction::People(pa) => contacts_people.push(pa),
                         ui::chat::ConvAction::OpenIm(id) => self.world.start_text_conference(vec![id]),
@@ -20634,8 +20638,8 @@ impl App {
                 a.currency = self.buy_currency_ui.show(&ctx, &p, &self.world);
                 a.currency.extend(self.show_buy_land(&ctx, &p));
                 // links and names clicked anywhere (LLAgentHandler)
-                if let Some(id) = ui::profile::take_open_request(&ctx) {
-                    self.profile_ui.open(&mut self.world, id);
+                if let Some((scope, id)) = ui::profile::take_open_request_in(&ctx) {
+                    self.profile_ui.open_in(&mut self.world, scope, id);
                 }
                 // the "Feed" tab: a browser on the grid's web profiles
                 let paths = self.media.plugins(&self.settings.media).cloned();
@@ -23437,6 +23441,10 @@ impl ApplicationHandler for App {
                         | "aurora-wide"
                         | "aurora-columns"
                         | "aurora-columns-hidden"
+                        | "aurora-gallery"
+                        | "aurora-gallery-medium"
+                        | "aurora-gallery-large"
+                        | "aurora-combination"
                         | "aurora-worn"
                         | "aurora-worn-medium"
                         | "aurora-worn-wide"
@@ -23472,7 +23480,10 @@ impl ApplicationHandler for App {
                     crate::world::inventory::demo::seed_view(
                         &mut self.world.inventory,
                         self.world.agent_id,
-                        view == "large" || view.starts_with("search-selection") || view.contains("keyboard-click-"),
+                        view == "large"
+                            || view == "aurora-gallery-large"
+                            || view.starts_with("search-selection")
+                            || view.contains("keyboard-click-"),
                     );
                     self.settings.inventory = ui::inventory::InventoryPreferences::default();
                     self.inventory_ui.show_original(&self.world.inventory, self.world.inventory.root);
@@ -23549,6 +23560,16 @@ impl ApplicationHandler for App {
                         }
                         if view.ends_with("-no-details") {
                             self.settings.inventory.show_details = false;
+                        }
+                        if view.starts_with("aurora-gallery") || view == "aurora-combination" {
+                            // pictures on some of the folder's entries, all of
+                            // them in the large folder
+                            crate::world::inventory::demo::seed_gallery(&mut self.world.inventory);
+                            self.settings.inventory.explorer.view = if view == "aurora-combination" {
+                                ui::inventory::view::ExplorerView::Combination
+                            } else {
+                                ui::inventory::view::ExplorerView::Gallery
+                            };
                         }
                         if view.starts_with("aurora-folder-window") {
                             // the right-click tests in a window of their own
