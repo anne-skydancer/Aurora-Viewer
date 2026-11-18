@@ -410,7 +410,16 @@ impl SnapshotUi {
     pub fn light_only(&mut self, ui: &mut egui::Ui, p: &Palette, view: &View, out: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = 6.0;
         let before = self.light;
-        light_rows(ui, p, &mut self.light, (view.exposure, view.hdr), view.shadows, &view.env, Some(view), out);
+        light_rows(
+            ui,
+            p,
+            &mut self.light,
+            (view.exposure, view.hdr),
+            view.shadows,
+            &view.env,
+            Some(view),
+            out,
+        );
         if self.light != before && !out.contains(&Action::Changed) {
             out.push(Action::Changed);
         }
