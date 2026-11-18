@@ -8,8 +8,8 @@
 //! The recipe is the one the shader has always had: periodic Perlin and
 //! Worley fractal noise, Perlin dilated by Worley (Schneider & Vos, SIGGRAPH
 //! 2015), with the octaves and weights of Hillaire's SIGGRAPH 2016 noise
-//! generator (sebh/TileableVolumeNoise, MIT, Copyright (c) 2016 Sebastien
-//! Hillaire): Worley fractal noise at scales 1, 2 and 4 with weights 0.625,
+//! generator (sebh/TileableVolumeNoise, MIT, Copyright(c) 2017 Sébastien
+//! Hillaire; its permission notice is in NOTICE.md): Worley fractal noise at scales 1, 2 and 4 with weights 0.625,
 //! 0.25 and 0.125. Only f32 sums, products, `floor` and `sqrt` are used, which
 //! are exact and ordered the same on every CPU, so the file is the same
 //! everywhere (a test pins its hash). The shader's generators stay as the
@@ -295,8 +295,13 @@ pub fn parse(bytes: &[u8]) -> Result<Noise, String> {
 /// names (a test of the fallback: a missing or damaged file gives an error
 /// and the shader generates the noise instead).
 pub fn load() -> Result<Noise, String> {
-    match std::env::var_os("AURORA_CLOUD_NOISE") {
-        Some(path) => parse(&std::fs::read(&path).map_err(|e| format!("cloud noise {}: {e}", path.to_string_lossy()))?),
+    load_from(std::env::var_os("AURORA_CLOUD_NOISE").as_deref())
+}
+
+/// The noise from the file at `path`, or the shipped one for None.
+fn load_from(path: Option<&std::ffi::OsStr>) -> Result<Noise, String> {
+    match path {
+        Some(path) => parse(&std::fs::read(path).map_err(|e| format!("cloud noise {}: {e}", path.to_string_lossy()))?),
         None => parse(SHIPPED),
     }
 }
@@ -374,11 +379,10 @@ mod tests {
 
     #[test]
     fn a_missing_file_gives_an_error_for_the_fallback() {
-        // SAFETY: no other test reads or writes the variable.
-        unsafe { std::env::set_var("AURORA_CLOUD_NOISE", "does-not-exist.bin") };
-        let r = load();
-        unsafe { std::env::remove_var("AURORA_CLOUD_NOISE") };
-        assert!(r.is_err());
+        // (the path is given, not set in the environment: other tests read
+        // it at the same time)
+        assert!(load_from(Some(std::ffi::OsStr::new("does-not-exist.bin"))).is_err());
+        assert!(load_from(None).is_ok(), "the shipped file");
     }
 
     #[test]

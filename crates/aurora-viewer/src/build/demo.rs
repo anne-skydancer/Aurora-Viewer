@@ -18,8 +18,8 @@
 //!   faces-mapping: one face on each of three textured surfaces (repeats,
 //!   offset and rotation; planar mapping; a PBR base color transform), for
 //!   the face-select pattern.
-//!   `,no-highlight` after any faces-* name turns "Show highlight" off at
-//!   frame 215 (faces-mapping,object:99620,no-highlight).
+//!   `,no-highlight` after any faces-* name turns "Show highlight" off when
+//!   the Edit tool opens, at 600 (faces-mapping,object:99620,no-highlight).
 //!   faces-texgen: frames A closely, selects a side face at 625, then
 //!   switches its mapping Default <-> Planar at 655 with the Texture tab's
 //!   edit (capture at 650 and 690).
@@ -592,6 +592,8 @@ pub fn steps(spec: &str, frame: u64, tool: &BuildTool, world: &World, s: &BuildS
             280 if parts[0] == "faces-mapping" => pick(99622, u8::MAX, true),
             _ if parts[0] == "faces-mapping" => Vec::new(),
             240 => pick(99620, u8::MAX, false),
+            // a second face with another texture: the picker opens tentative
+            245 if parts[0].starts_with("faces-picker-multiple") => pick(99621, u8::MAX, true),
             250 if parts[0].starts_with("faces-picker") => vec![Step::TexturePicker(
                 if parts[0].starts_with("faces-picker-material") {
                     super::ui::PickTarget::PbrMaterial

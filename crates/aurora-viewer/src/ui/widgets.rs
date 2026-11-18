@@ -18,6 +18,8 @@ mod field_centering_tests;
 #[cfg(test)]
 mod movement_tests;
 pub(crate) use cascade::Group as CascadeGroup;
+#[cfg(test)]
+mod auto_height_tests;
 pub mod color;
 mod copy_on_click;
 pub mod demo;
@@ -28,10 +30,13 @@ pub(crate) mod keycap;
 pub(crate) mod local_texture;
 mod modal_keys;
 pub(crate) mod pills;
+pub(crate) mod reorder;
 mod resize;
 mod restricted_text;
 #[cfg(test)]
 mod restricted_text_tests;
+#[cfg(test)]
+mod solid_background_tests;
 pub use crate::text_validation::Policy as TextPolicy;
 pub use restricted_text::field as restricted_text_field;
 pub use restricted_text::number as restricted_number;
@@ -49,9 +54,9 @@ pub use color::color_button;
 pub use copy_on_click::copy_on_click;
 pub(crate) use modal_keys::{default_button, enter_pressed};
 pub use pills::{
-    clearable_search_box, dot_pill, dot_pill_width, filter_field, filter_pill, filter_pill_at, filter_pill_width, pill_tab, pill_tab_wide,
-    reveal_search_selection, search_box, search_cleared, search_list_item, search_scroll_to_column, search_scroll_to_row, search_text_edit,
-    search_text_edit_with_margin,
+    chip_row, clearable_search_box, dot_pill, dot_pill_width, filter_field, filter_pill, filter_pill_at, filter_pill_width, pill_tab,
+    pill_tab_wide, reveal_search_selection, search_box, search_cleared, search_list_item, search_scroll_to_column, search_scroll_to_row,
+    search_text_edit, search_text_edit_with_margin,
 };
 pub use text_field::text_field;
 pub use tracks::{
@@ -60,21 +65,65 @@ pub use tracks::{
 };
 pub use unread::{CountSize, UnreadCount, unread_count};
 pub use volume::{VolumeScale, perceptual_override, set_perceptual_volume, volume_slider, volume_slider_with};
+pub(crate) use workspace::{
+    INVENTORY_LABEL_PADDING, finish_bar_glass, inventory_item_label, inventory_item_label_tagged, inventory_spacing, island, island_shape,
+    organization_drag_preview, organization_drop_target, organization_header, organization_section, organization_source,
+    organization_typography, overlay, overlay_frame, paint_world_label,
+};
 pub use workspace::{
     Modal, ModalGround, caret_room, collapsing, collapsing_forced, disclosure_caret, experimental_mark, glyph, navigation,
     navigation_beside, navigation_wrapped, paint_glyph, section_header, sort_caret, stat, surface,
-};
-pub(crate) use workspace::{
-    finish_bar_glass, inventory_item_label, inventory_item_label_tagged, inventory_spacing, island, island_shape,
-    organization_drag_preview, organization_drop_target, organization_header, organization_section, organization_source,
-    organization_typography, overlay, overlay_frame, paint_world_label,
 };
 
 /// Whether UI owns a world-pointer event at `pos` (logical points). Resize
 /// grips consume the press outside their window too, as LLResizeHandle and
 /// LLResizeBar::handleMouseDown do, and egui retains the subsequent drag.
 pub(crate) fn pointer_over_ui(ctx: &egui::Context, pos: egui::Pos2) -> bool {
-    ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input() || resize::contains_pointer(ctx, pos)
+    ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input() || resize::contains_pointer(ctx, pos) || solid_background_at(ctx, pos)
+}
+
+/// The background areas that are panels of their own, by layer id.
+/// The body of a window of automatic height (`Floater::auto_height`) that
+/// scrolls once it is taller than `room`: then exactly `room` tall. Without
+/// the floor, a body taller than the room took the height egui's window
+/// had last frame, so a window squeezed once (the viewer's window made tiny,
+/// a tester's report of 2026-11-17) kept its small height for good.
+pub(crate) fn auto_height_body(room: f32) -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .max_height(room)
+        .min_scrolled_height(room)
+        .auto_shrink([false, true])
+}
+
+#[derive(Clone, Default)]
+struct SolidAreas(std::collections::HashSet<egui::Id>);
+
+fn solid_areas_id() -> egui::Id {
+    egui::Id::unique("aurora_solid_background_areas")
+}
+
+/// The background area `id` (`Order::Background`, kept under the windows) is
+/// a panel of its own, the Director's timeline or a keyframe of it in the
+/// world: a press on it is its own, never the world's. egui leaves a press
+/// on such an area to the world (`is_pointer_over_egui` only counts a
+/// background area outside the root's free room), and the world reads the
+/// press before egui's pass has seen it (`egui_wants_pointer_input` comes
+/// too late): without this, a click on the strip between its buttons walked
+/// the avatar there or stood it up.
+pub(crate) fn solid_background(ctx: &egui::Context, id: egui::Id) {
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<SolidAreas>(solid_areas_id()).0.insert(id);
+    });
+}
+
+/// The topmost area at `pos` (shown last frame, interactable, a window above
+/// it first) is a solid background area (`solid_background`).
+fn solid_background_at(ctx: &egui::Context, pos: egui::Pos2) -> bool {
+    let Some(layer) = ctx.memory(|m| m.layer_id_at(pos)) else {
+        return false;
+    };
+    layer.order == egui::Order::Background
+        && ctx.data_mut(|d| d.get_temp_mut_or_default::<SolidAreas>(solid_areas_id()).0.contains(&layer.id))
 }
 
 /// Any floater/bare window is moving or resizing, independently of drawing
@@ -338,12 +387,14 @@ impl WheelSteps {
 /// winit reports that roll as a positive delta.y. Each whole notch is scaled
 /// like onUpBtn. While the pointer stays on an enabled field the smoothed
 /// scroll is eaten, including the frames after the notch, so the build panel
-/// does not creep. A disabled field leaves the wheel to the panel. `apply`
+/// does not creep. A disabled field leaves the wheel to the panel, and so
+/// does a field that does not `take` it (the build window's fields that are
+/// not being typed in, unless its "wheel on hover" option is on). `apply`
 /// is false while a typed draft or a drag owns the value: the wheel is still
 /// eaten, and it does not change the number.
-pub(crate) fn spin_wheel(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, apply: bool) -> WheelSteps {
+pub(crate) fn spin_wheel(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, take: bool, apply: bool) -> WheelSteps {
     let key = id.with("spinner_wheel_remainder");
-    let hovered = ui.is_enabled() && ui.rect_contains_pointer(rect);
+    let hovered = take && ui.is_enabled() && ui.rect_contains_pointer(rect);
     if !hovered {
         ui.data_mut(|d| d.remove::<WheelRemainder>(key));
         return WheelSteps::none();
@@ -763,6 +814,19 @@ impl<'a> Floater<'a> {
             return None;
         }
         let min_id = egui::Id::unique((self.id, "minimized"));
+        // "Reset window positions and sizes" (`reset_windows`): back to its
+        // default place and size, expanded, at this frame
+        let reset = super::layout::take_reset(ctx, egui::Id::unique(self.id));
+        if reset {
+            ctx.data_mut(|d| {
+                d.remove::<bool>(min_id);
+                d.remove::<Vec2>(egui::Id::unique(self.id).with("expanded_size"));
+            });
+            if self.cascade.is_some() {
+                // it opens again as the first of its group
+                cascade::forget(ctx, egui::Id::unique(self.id));
+            }
+        }
         // persisted with the UI layout (ui_layout.ron)
         let minimized = ctx.data_mut(|d| d.get_persisted::<bool>(min_id)).unwrap_or(false);
         // minimized with its compact body: sized by that body
@@ -814,7 +878,7 @@ impl<'a> Floater<'a> {
         let expanded_id = window_id.with("expanded_size");
         let restore_id = window_id.with("restore_size");
         let expanded = ctx.data_mut(|d| d.get_persisted::<Vec2>(expanded_id)).unwrap_or(self.default_size);
-        let restore = ctx.data_mut(|d| d.remove_temp::<bool>(restore_id)).unwrap_or(false);
+        let restore = ctx.data_mut(|d| d.remove_temp::<bool>(restore_id)).unwrap_or(false) || (reset && self.resizable);
         let resizable = self.resizable && !minimized;
         // The windows live between the bars (`layout::work_area`): none
         // opens larger than that room, nor outside it.
@@ -822,6 +886,10 @@ impl<'a> Floater<'a> {
         self.min_size = self.min_size.min(work.size());
         self.default_size = self.default_size.min(work.size());
         self.default_pos = fit_in(work, self.default_pos, self.default_size);
+        if reset && self.cascade.is_none() {
+            super::layout::reanchor(ctx, window_id);
+            ctx.data_mut(|d| d.insert_temp(window_id.with(PLACE_POS), self.default_pos));
+        }
         let opening = self
             .cascade
             .and_then(|group| cascade::prepare(ctx, window_id, group, egui::Rect::from_min_size(self.default_pos, expanded), work));
@@ -992,11 +1060,12 @@ impl<'a> Floater<'a> {
                         // a window with a compact body when minimized says
                         // so with the Performance window's compact / full
                         // icons rather than a collapse (#1035)
-                        let (icon, tip) = match (self.compact_minimized.is_some(), minimized) {
-                            (true, true) => ("arrows-maximize", aurora_i18n::tr!("common-full-view")),
-                            (true, false) => ("arrows-minimize", aurora_i18n::tr!("common-compact-view")),
-                            (false, true) => ("minus", aurora_i18n::tr!("common-expand")),
-                            (false, false) => ("minus", aurora_i18n::tr!("common-collapse")),
+                        let icon = minimize_title_icon(self.compact_minimized.is_some(), minimized);
+                        let tip = match (self.compact_minimized.is_some(), minimized) {
+                            (true, true) => aurora_i18n::tr!("common-full-view"),
+                            (true, false) => aurora_i18n::tr!("common-compact-view"),
+                            (false, true) => aurora_i18n::tr!("common-expand"),
+                            (false, false) => aurora_i18n::tr!("common-collapse"),
                         };
                         if title_button(ui, p, icon).on_hover_text(tip).clicked() {
                             toggle_min = true;
@@ -1284,7 +1353,11 @@ pub(crate) fn bare_window(
         .resizable(false)
         .constrain(true);
     let slot = super::layout::slot(ctx, window_id);
-    if let Some(pos) = slot.pos {
+    if super::layout::take_reset(ctx, window_id) {
+        // "Reset window positions and sizes": back to its default rect
+        super::layout::reanchor(ctx, window_id);
+        w = w.current_pos(default.min).fixed_size(default.size());
+    } else if let Some(pos) = slot.pos {
         w = w.current_pos(pos);
     }
     if let Some(limits) = slot.limits {
@@ -1483,6 +1556,17 @@ pub fn place_floater(ctx: &egui::Context, id: &str, pos: egui::Pos2, size: Vec2)
         d.insert_temp(window_id.with("restore_size"), true);
         d.insert_temp(window_id.with(PLACE_POS), pos);
     });
+}
+
+/// "Reset window positions and sizes" (Preferences › Layout): every window
+/// back to its default place and size, expanded, without touching a
+/// setting (`layout::reset_windows`). The groups of preview windows forget
+/// the rect they open at, and the Performance window the one of its full
+/// view.
+pub fn reset_windows(ctx: &egui::Context) {
+    super::layout::reset_windows(ctx);
+    cascade::forget_saved(ctx);
+    super::perf::forget_monitor_rect(ctx);
 }
 
 /// Split what is left of `ui` between a list and the footer under it (its
@@ -1713,6 +1797,18 @@ pub(crate) const EXPAND: &str = "expand";
 /// Temporary frame of a floater asked to close (`close_floater`).
 const CLOSE: &str = "close";
 
+/// Title-bar minimize / expand icon (#3084). Ordinary floaters: minus while
+/// expanded, square while minimized. Compact bodies (Performance) keep the
+/// arrows-maximize / arrows-minimize pair.
+fn minimize_title_icon(compact: bool, minimized: bool) -> &'static str {
+    match (compact, minimized) {
+        (true, true) => "arrows-maximize",
+        (true, false) => "arrows-minimize",
+        (false, true) => "square",
+        (false, false) => "minus",
+    }
+}
+
 /// Title bar button with a Tabler icon (drawn by hand if it is missing).
 fn title_button(ui: &mut egui::Ui, p: &Palette, icon: &str) -> egui::Response {
     title_button_sized(ui, p, icon, Vec2::splat(16.0))
@@ -1866,6 +1962,18 @@ pub const PICTURE_TINT: Color32 = Color32::WHITE;
 // theme-guard: content — the same picture, darkened
 /// Tint of a picture whose control is disabled.
 pub const PICTURE_TINT_DISABLED: Color32 = Color32::from_gray(120);
+
+/// A state written over a picture ("Multiple"), on a backing of its own:
+/// the picture under it may be as light as the text.
+pub(crate) fn picture_label(ui: &egui::Ui, p: &Palette, rect: egui::Rect, text: &str, size: f32) {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), egui::FontId::proportional(size), p.ink);
+    let at = egui::Rect::from_center_size(rect.center(), galley.size());
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
+    painter.rect_filled(at.expand2(egui::vec2(5.0, 2.0)), inner_radius(ui.visuals()), p.bar);
+    painter.galley(at.min, galley, p.ink);
+}
 
 /// Corners of a small mark inside a control or a line (the knob of a switch,
 /// a key cap, a status square, a letter badge): one pixel tighter than the

@@ -874,7 +874,7 @@ pub fn chat_sender_menu(ui: &mut egui::Ui, p: &Palette, world: &World, id: Uuid,
 /// FSFloaterContacts::refreshUI, LLInspectAvatar::enablePay), instead of
 /// being refused after the click.
 pub fn can_pay_resident(world: &World) -> bool {
-    !world.rlva.has("pay")
+    world.rlva_can_pay()
 }
 
 /// @showworldmap greys the buttons and entries that open the world map on a
@@ -1027,8 +1027,11 @@ fn avatar_menu_reporting(
             ui.ctx().copy_text(format!("secondlife:///app/agent/{id}/mention"));
         }
     };
+    // "can_add" of PeopleContextMenu (llpanelpeoplemenus.cpp): no
+    // friendship offer to a resident `@shownames` hides, from a list that
+    // names them either
     let add_friend = |ui: &mut egui::Ui| {
-        if friend.is_none() && menu::item(ui, p, "user-plus", aurora_i18n::tr!("common-become-friends")) {
+        if friend.is_none() && world.rlva_can_name(id) && menu::item(ui, p, "user-plus", aurora_i18n::tr!("common-become-friends")) {
             act(CtxAction::AddFriend(id));
         }
     };

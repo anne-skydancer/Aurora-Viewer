@@ -283,6 +283,9 @@ pub mod set_notices;
 /// progressive shape changes (AURORA_DEMO_SHAPE_MORPH).
 #[path = "demo_shape_morph.rs"]
 pub mod shape_morph;
+/// Many Orion-like friends for multi-share (#3074; AURORA_DEMO_SHARE=multi).
+#[path = "demo_share.rs"]
+pub mod share;
 /// Freeze, region console and voice moderation (AURORA_DEMO_FREEZE,
 /// AURORA_DEMO_SIM_CONSOLE, AURORA_DEMO_VOICE_MODERATION).
 #[path = "demo_sim_extras.rs"]
@@ -966,6 +969,10 @@ fn demo_raw() -> Llsd {
             .into_iter()
             .map(|(id, given, has)| llsd_map! {"buddy_id" => id, "buddy_rights_given" => given, "buddy_rights_has" => has}),
     );
+    // AURORA_DEMO_SHARE=multi: dozens of Orion-like friends for the Share picker
+    buddies.extend(share::friends().into_iter().map(|(id, given, has)| {
+        llsd_map! {"buddy_id" => id, "buddy_rights_given" => given, "buddy_rights_has" => has}
+    }));
     let mut raw = llsd_map! {
         "inventory-root" => Llsd::Array(vec![llsd_map!{"folder_id" => u(1)}]),
         // an adult account that wants every rating (the search window's boxes);
@@ -986,6 +993,11 @@ fn demo_raw() -> Llsd {
         && let Llsd::Map(m) = &mut raw
     {
         env::library_login(m);
+    }
+    // Exercise the login clock correction on the normal LoggedIn path.
+    if std::env::var("AURORA_DEMO_EVENT_TIMES").as_deref() == Ok("grid-behind") {
+        let seconds = crate::ui::bars::clock::now_unix().saturating_sub(3600);
+        raw.insert("seconds_since_epoch", seconds.to_string());
     }
     // AURORA_DEMO_PEOPLE's groups tab: "3 groups out of 42"
     if let Some(limit) = people::group_limit()
@@ -2432,8 +2444,33 @@ pub fn applinks_action(text: &str) -> Option<crate::ui::context::CtxAction> {
             verb: AgentVerb::ReportAbuse,
         }),
         "inventory-show" => CtxAction::AppLink(AppLink::InventoryShow),
+        // blocked first (`applinks_blocked`): the link asks before unblocking
+        "unmute" => CtxAction::AppLink(AppLink::Agent {
+            id: DEMO_LOUP,
+            verb: AgentVerb::Unmute,
+        }),
+        "unblock" => CtxAction::AppLink(AppLink::Agent {
+            id: APPLINKS_SIGN,
+            verb: AgentVerb::Unblock(aurora_i18n::tr!("demo-places-sign").into()),
+        }),
         _ => CtxAction::AppLink(applinks_click(text)?),
     })
+}
+
+/// The sign object that says the links of `AURORA_DEMO_APPLINKS` in the
+/// chat console.
+pub const APPLINKS_SIGN: Uuid = Uuid::from_u128(0x5106);
+
+/// `AURORA_DEMO_APPLINKS=unmute|unblock`: the resident or the object the
+/// scene blocks before the link is clicked, with its kind.
+pub fn applinks_blocked() -> Option<(Uuid, String, crate::world::mutes::MuteType)> {
+    use crate::world::mutes::MuteType;
+    let mode = std::env::var("AURORA_DEMO_APPLINKS").ok()?;
+    match mode.split(':').next()? {
+        "unmute" => Some((DEMO_LOUP, aurora_i18n::tr!("demo-violet-wolf").into(), MuteType::Agent)),
+        "unblock" => Some((APPLINKS_SIGN, aurora_i18n::tr!("demo-places-sign").into(), MuteType::Object)),
+        _ => None,
+    }
 }
 
 /// What the map would have taught before `slurls_scene`: the lagoon and
@@ -3242,6 +3279,9 @@ pub fn demo_reply(cmd: &aurora_net::NetCommand) -> Vec<NetEvent> {
             vec![NetEvent::Names(
                 ids.iter()
                     .map(|id| {
+                        if let Some((first, last, _)) = share::name(id) {
+                            return (*id, first, last);
+                        }
                         if let Some(name) = minimap_name_for(id) {
                             return (*id, name.legacy_first, name.legacy_last);
                         }
@@ -3285,6 +3325,13 @@ pub fn demo_reply(cmd: &aurora_net::NetCommand) -> Vec<NetEvent> {
                             (first.as_str(), "Resident", sample.display_name)
                         } else {
                             names[(id.as_u128() & 0xFF) as usize % names.len()]
+                        };
+                        // AURORA_DEMO_SHARE: Orion Example 001… override the cycle
+                        let owned = share::name(id);
+                        let (first, last, dn) = if let Some((ref f, ref l, ref d)) = owned {
+                            (f.as_str(), l.as_str(), d.as_str())
+                        } else {
+                            (first, last, dn)
                         };
                         let username = if last == "Resident" {
                             first.to_lowercase()
@@ -6979,6 +7026,18 @@ pub fn ui_sound(id: Uuid) -> aurora_audio::SoundClip {
 /// (clicks) and a text field (keyboard).
 pub fn demo_media_page() -> &'static str {
     aurora_i18n::tr!("demo-media-page")
+}
+
+/// `AURORA_DEMO_MEDIA=links`: the reproduction page of a `secondlife://`
+/// link clicked in a page shown on a prim (issue #3518), with an anchor and
+/// a script navigation for the chat bridge and for a place.
+pub fn demo_media_links_page() -> String {
+    use base64::Engine as _;
+    let region = aurora_i18n::tr!("common-aurora-demo");
+    let html = include_str!("demo_media_links.html")
+        .replace("{{REGION}}", &crate::slurl::encode(region))
+        .replace("{{REGION_NAME}}", region);
+    format!("data:text/html;base64,{}", base64::engine::general_purpose::STANDARD.encode(html))
 }
 
 /// AURORA_DEMO_MEDIA: a 4 × 2.25 m screen ahead-left of the start position whose

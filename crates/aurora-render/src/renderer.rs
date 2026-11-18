@@ -1145,8 +1145,11 @@ struct Pipelines {
     physics_wire: Option<wgpu::RenderPipeline>,
     select_child_wire: Option<wgpu::RenderPipeline>,
     selection_mask: wgpu::RenderPipeline,
-    /// The face-select pattern over the selected faces (selection.rs).
+    /// The face-select pattern over the selected HUD faces (selection.rs).
     selection_pattern: wgpu::RenderPipeline,
+    /// The face-select pattern over the selected world faces, blended into
+    /// the HDR scene with the debug overlays (selection.rs).
+    selection_pattern_hdr: wgpu::RenderPipeline,
     /// The poser's hovered part on the subject's skinned faces.
     part_mask: wgpu::RenderPipeline,
     /// The visible part of the subject's faces (part_pick.rs).
@@ -1981,6 +1984,8 @@ pub(crate) struct Backend {
     cube: Option<crate::equirect::CubeTarget>,
     /// The panoramas being read back, asked in order (equirect.rs).
     equirect_reads: crate::equirect::Readbacks,
+    /// The Director's film frames on their way back (film_readback.rs).
+    film_reads: crate::film_readback::FilmReads,
     /// The six faces of a 360° capture are drawn one after the other: the
     /// snapshot size stays (the render targets are made once, not twice per
     /// face) from the first face to the frame after the last.
@@ -2038,6 +2043,8 @@ pub(crate) struct Backend {
     exposure: crate::exposure::Exposure,
     /// The photo viewfinder's luminance histogram (histogram.rs).
     histogram: crate::histogram::Histogram,
+    /// The small pictures of the view asked for (thumbnail.rs).
+    thumbnails: crate::thumbnail::Thumbnails,
     /// The glow was drawn last frame: its image is there for the exposure.
     glow_drawn: bool,
     frame_buffer: wgpu::Buffer,
@@ -4660,6 +4667,7 @@ impl Backend {
             equirect: None,
             cube: None,
             equirect_reads: Default::default(),
+            film_reads: Default::default(),
             cube_hold: false,
             cube_keep: false,
             cube_step: None,
@@ -4693,6 +4701,7 @@ impl Backend {
             bloom,
             exposure,
             histogram,
+            thumbnails: crate::thumbnail::Thumbnails::new(),
             glow_drawn: false,
             frame_buffer,
             refl_buffers,
@@ -5846,9 +5855,22 @@ impl Backend {
             },
             ..base("selected face coverage", "vs_main", "fs_selection_mask")
         });
-        // The face-select pattern (LLPipeline::renderSelectedFaces), blended
-        // over the finished image of the world view or of the HUDs, both in
-        // the surface format, with the coverage pass's depth state.
+        // The face-select pattern (LLPipeline::renderSelectedFaces) of the
+        // world's faces: blended into the HDR scene like the debug overlays,
+        // before exposure, tone mapping and gamma, as LL's renderHighlights
+        // runs in renderGeomPostDeferred, before renderFinalize. The scene
+        // alpha (the glow) is left alone.
+        let selection_pattern_hdr = pipe(PipeDesc {
+            cull: None,
+            blend: Some(alpha_blend),
+            write_mask: wgpu::ColorWrites::COLOR,
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::GreaterEqual,
+            ..base("selected face pattern", "vs_main", "fs_selection_pattern_hdr")
+        });
+        // The HUDs' pattern: blended over the finished HUD image in the
+        // surface format (LL draws the HUDs after renderFinalize), with the
+        // coverage pass's depth state.
         let selection_pattern = pipe(PipeDesc {
             cull: None,
             samples: 1,
@@ -5861,7 +5883,7 @@ impl Backend {
                 clamp: 0.0,
             },
             constants: &hud_constants,
-            ..base("selected face pattern", "vs_main", "fs_selection_pattern")
+            ..base("selected HUD face pattern", "vs_main", "fs_selection_pattern")
         });
         // The poser's hovered part: the subject's skinned faces kept where
         // their weights are the part's joints (`vs_part_mask`)
@@ -6261,6 +6283,7 @@ impl Backend {
             select_child_wire,
             selection_mask,
             selection_pattern,
+            selection_pattern_hdr,
             part_mask,
             part_pick,
             ssr: ssr_pipe,
@@ -8030,7 +8053,14 @@ impl Backend {
         let cube_face = std::mem::take(&mut self.cube_step).is_some();
         // (a face of a 360° capture is answered by nothing: it stays on the
         // GPU, and the main thread did not wait for it)
-        let snapshot = self.end_snapshot() && !cube_face;
+        // (a film frame drawn at its size is no photo: its pixels come back
+        // in `films`, a later frame's result once the GPU is done)
+        let film = self.film_reads.end_frame();
+        let snapshot = self.end_snapshot() && !cube_face && !film;
+        if self.film_reads.busy() {
+            self.lost.poll(&self.device);
+        }
+        let films = self.film_reads.answers();
         FrameResult {
             index,
             stats,
@@ -8043,6 +8073,8 @@ impl Backend {
             snapshot,
             equirect: None,
             histogram: self.histogram.take(),
+            thumbnails: self.thumbnails.take(),
+            films,
             spent,
         }
     }
@@ -8315,6 +8347,7 @@ impl Backend {
             capture: None,
             equirect: None,
             histogram: None,
+            thumbnail: None,
             motion_cut: packet.motion_cut,
             // (moved above, every renderer once)
             world_shift: [0.0; 2],
@@ -8554,11 +8587,16 @@ impl Backend {
             // (taken by `render` before the frame)
             equirect: _,
             histogram,
+            thumbnail,
             motion_cut,
             world_shift,
             input_at,
         } = packet;
         let external_output = output.is_some();
+        self.film_reads.begin(match wanted {
+            Some(Capture::Film(tag, _)) => Some(tag),
+            _ => None,
+        });
         self.motion_cut |= motion_cut;
         self.shift_weather(world_shift);
         let mut stats = RenderStats::default();
@@ -8629,7 +8667,7 @@ impl Backend {
             self.rebuild_targets();
         }
         let snapshot = match wanted {
-            Some(Capture::Snapshot(s)) if s.width > 0 && s.height > 0 => Some(s),
+            Some(Capture::Snapshot(s) | Capture::Film(_, Some(s))) if s.width > 0 && s.height > 0 => Some(s),
             _ => None,
         };
         if let Some(s) = snapshot {
@@ -11729,6 +11767,10 @@ impl Backend {
         // the debug overlays: the land, the highlights of the debug views,
         // the physics shapes, the selection and the wireframe
         let overlays = |pass: &mut wgpu::RenderPass| {
+            // the face-select pattern, whatever "Show highlight" gives the
+            // halo: LL's renderHighlights calls renderSelectedFaces without
+            // reading RenderHighlightSelections, right before renderDebug
+            draw(pass, &self.pipelines.selection_pattern_hdr, rg.select_pattern);
             draw(pass, &self.pipelines.land_overlay, rg.land_overlay);
             draw(pass, &self.pipelines.debug_red, rg.debug_red);
             draw(pass, &self.pipelines.debug_blue, rg.debug_blue);
@@ -12620,19 +12662,6 @@ impl Backend {
             calls.set(calls.get() + 1);
         }
 
-        // The face-select pattern is drawn whether or not "Show highlight"
-        // gives the halo any face: the Legacy Viewer's renderHighlights calls
-        // renderSelectedFaces without reading RenderHighlightSelections. It
-        // needs only its own list and the depth, and goes before the halo.
-        // It carries no timestamp: the frame's last one is written by the
-        // pass before it, or by the halo's when that follows.
-        if rg.select_pattern.1 > 0 {
-            let mut pass = crate::selection::begin_pattern(&mut encoder, scene_target, post_depth);
-            bind_mesh(&mut pass, &self.groups.b);
-            draw(&mut pass, &self.pipelines.selection_pattern, rg.select_pattern);
-            drop(pass);
-            calls.set(calls.get() + 1);
-        }
         if rg.select_faces.1 > 0
             && let Some(selection) = &self.selection
         {
@@ -12903,6 +12932,24 @@ impl Backend {
         if wanted == Some(Capture::Scene) {
             let source = self.ui_blur.as_ref().map_or(surface_tex.texture(), |blur| &blur.source);
             capture = self.encode_capture(&mut encoder, source, false);
+        } else if matches!(wanted, Some(Capture::Film(_, None))) && self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
+            // a live film's frame: the same view, read back without a wait
+            let source = self.ui_blur.as_ref().map_or(surface_tex.texture(), |blur| &blur.source);
+            let bgra = matches!(
+                source.format(),
+                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+            );
+            self.film_reads.encode(&self.device, &mut encoder, source, bgra, f.cutout);
+        }
+        // the Director's keyframe thumbnail: the same view, read back later
+        if let Some(tag) = thumbnail
+            && snapshot.is_none()
+            && self.config.usage.contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            let source = self.ui_blur.as_ref().map_or(surface_tex.texture(), |blur| &blur.source);
+            let (width, height, format) = (self.config.width, self.config.height, source.format());
+            self.thumbnails
+                .encode(&self.device, &mut encoder, source, width, height, format, tag);
         }
         let draws_hud_selection = hud_select_faces_range.1 > 0 && self.hud_selection.is_some() && self.hud_depth.is_some();
         // HUDs retain their original texture colors and never inherit world
@@ -12944,7 +12991,8 @@ impl Backend {
             draw(&mut pass, &self.pipelines.hud_debug_red, hud_debug_red_range);
             draw(&mut pass, &self.pipelines.hud_debug_blue, hud_debug_blue_range);
         }
-        // the HUD faces' pattern, whatever "Show highlight" says (above); only when
+        // the HUD faces' pattern, whatever "Show highlight" says (as the world's
+        // in the scene pass); only when
         // the HUD pass ran, which clears the HUD depth. With the halo off this pass
         // carries no timestamp, so its time is not in the GPU total.
         if draw_huds
@@ -13018,6 +13066,15 @@ impl Backend {
             if let Some(cube) = &mut self.cube {
                 cube.add_face(&mut encoder, surface_tex.texture(), step);
             }
+        } else if snapshot.is_some() && self.film_reads.carried() {
+            // an offline render's frame, drawn at its size: read back
+            // without a wait, answered by a later frame
+            let texture = surface_tex.texture();
+            let bgra = matches!(
+                texture.format(),
+                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+            );
+            self.film_reads.encode(&self.device, &mut encoder, texture, bgra, f.cutout);
         } else if snapshot.is_some() {
             capture = self.encode_capture(&mut encoder, surface_tex.texture(), true);
         }
@@ -13074,6 +13131,8 @@ impl Backend {
         frame_uploads.after_submit();
         // (a face of a 360° capture is on the GPU, with nothing to read)
         let captured = capture.and_then(|capture| self.read_capture(capture, f.cutout));
+        // a film frame's copy is submitted: its mapping can begin
+        self.film_reads.map();
 
         if let (Some(t), Some(slot)) = (&mut self.timer, timer_slot) {
             let ready = t.readback[slot].1.clone();
@@ -13090,8 +13149,12 @@ impl Backend {
         self.occlusion.after_submit();
         self.cull.after_submit();
         self.depth_pick.after_submit();
+        if let Some(st) = &self.st {
+            st.after_submit();
+        }
         self.exposure.after_submit();
         self.histogram.after_submit();
+        self.thumbnails.after_submit();
         self.drawn_pick.after_submit();
         self.part_pick.after_submit();
         prof.mark("submit");

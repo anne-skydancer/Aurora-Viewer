@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub mod area_search;
+pub mod autotune;
 pub mod backup;
 pub mod draw_stepping;
 mod hover_height;
 pub mod registry;
-mod saver;
 pub mod stream_list;
 
 /// How blended faces (glass, hair, leaves) cast sun and projector shadows
@@ -100,6 +100,27 @@ pub enum ChatThumbnails {
     #[default]
     ChatBar,
     TopRight,
+}
+
+/// The nearby chat bar (Preferences › Chat, #2696): at the bottom always,
+/// only while it is used (the Legacy Viewer's `AutohideChatBar`, #1009), or
+/// never, the Nearby tab of the Conversations window taking its place
+/// (Aurora's: there Enter always shows the bar, `start_chat` in
+/// indra/newview/llviewerinput.cpp).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ChatBar {
+    #[default]
+    Always,
+    WhenTyping,
+    ConversationsOnly,
+}
+
+impl ChatBar {
+    /// The bar is not always on screen: the default dock keeps the
+    /// Conversations button.
+    pub fn hides(self) -> bool {
+        self != ChatBar::Always
+    }
 }
 
 /// Where web pages open, like `PreferredBrowserBehavior` and
@@ -702,6 +723,13 @@ pub struct Settings {
     /// The steps under way; the file keeps the user's draw distance.
     #[serde(skip)]
     pub draw_stepping: Option<draw_stepping::Stepping>,
+    /// Autotune, the Performance window's target frame rate
+    /// (settings/autotune.rs; off).
+    pub autotune: autotune::Config,
+    /// The user's draw distance and avatars in full while Autotune holds the
+    /// live ones: never saved, they are what is written in their place.
+    #[serde(skip)]
+    pub autotune_hold: Option<autotune::Hold>,
     /// The GPU to draw with (Preferences › Graphics; #894): empty for the
     /// automatic choice (discrete first), or the adapter's name; read at
     /// startup (`aurora_render::adapter_choice`), `AURORA_GPU` overrides it.
@@ -909,6 +937,9 @@ pub struct Settings {
     pub appearance_fill_previews: bool,
     /// The order of the Favorite Wearables list (FSWearableFavoritesSortOrder).
     pub wearable_favorites_sort: crate::world::wearable_favorites::SortOrder,
+    /// The Favorite Wearables' custom orders (`SortOrder::Custom`), per
+    /// account: for each view, its originals in the order dragged.
+    pub wearable_favorites_order: std::collections::HashMap<uuid::Uuid, crate::world::wearable_favorites::Orders>,
     /// The Appearance tab shown at exit (gallery, outfit list, worn), shown
     /// again at the next start, as the Legacy Viewer's `LastAppearanceTab`.
     pub appearance_tab: u8,
@@ -1021,11 +1052,15 @@ pub struct Settings {
     /// `@` in a chat field lists the residents of the conversation to mention
     /// (FSUseChatMentionAutoComplete, on).
     pub chat_mention_autocomplete: bool,
-    /// The local chat bar (the chat island) shows only while it is used:
-    /// Enter or a letter key brings it (#1009). The Legacy Viewer's
-    /// `AutohideChatBar`, off by default; with the islands the default dock
-    /// then keeps the Conversations button.
-    pub autohide_chat_bar: bool,
+    /// When the local chat bar (the chat island) shows: always, only while
+    /// it is used (#1009), or never, the Conversations window's Nearby tab
+    /// taking Enter (#2696). With the islands, the default dock keeps the
+    /// Conversations button while the bar hides.
+    pub chat_bar: ChatBar,
+    /// The former switch "Hide the chat bar when not in use", read once:
+    /// on is `ChatBar::WhenTyping`.
+    #[serde(rename = "autohide_chat_bar", skip_serializing)]
+    pub(crate) former_autohide_chat_bar: Option<bool>,
     /// Show Contacts in Conversations (Preferences > Chat, on by default as
     /// the Legacy Viewer's always-present entry; it can be hidden there).
     pub show_contacts_tab: bool,
@@ -1109,6 +1144,10 @@ pub struct Settings {
     /// (FSFloaterIMContainer::startFlashingTab, FlashCount / FlashPeriod;
     /// Preferences > Chat, on).
     pub flash_unread_conversations: bool,
+    /// The button back to the latest messages over a conversation scrolled
+    /// away from its end (`ui/chat/latest.rs`, #558; on). The Legacy Viewer
+    /// has no such button.
+    pub chat_latest_button: bool,
     /// The Conversations button flashes when an IM, a group chat or a
     /// conference message arrives while the window is closed, then stays
     /// lit until it is opened; minimized, its bar flashes instead
@@ -1585,6 +1624,15 @@ pub struct Settings {
     /// A left click on an object whose click action is Sit does not sit
     /// (FSBlockClickSit, off); the menu's Sit still does.
     pub block_click_sit: bool,
+    /// The rigged meshes with a touch script or a click action that a left
+    /// click acts on: animated objects (animesh; on), rigged attachments we
+    /// wear (off) and those of other avatars (off). Off, the click passes
+    /// through them as in the Legacy Viewer, which has none of the three
+    /// (scene/drawn.rs; Preferences › Mouse and keyboard, "Left click on
+    /// rigged objects").
+    pub rigged_click_animesh: bool,
+    pub rigged_click_own: bool,
+    pub rigged_click_others: bool,
     /// RenderVolumeSAProtection: prims and sculpts with a very large surface
     /// stop being drawn past a total each frame (scene/surface_area.rs; off).
     pub large_surface_protection: bool,
@@ -1731,6 +1779,9 @@ pub struct Settings {
     /// by another program), a new window and device instead of closing
     /// (app/gpu_recovery.rs). On by default; the Legacy Viewer closes.
     pub gpu_recovery: bool,
+    /// Gaming mode (app/gaming_mode.rs) ends by itself when the window
+    /// comes back in front. On by default; not in the Legacy Viewer.
+    pub gaming_mode_leave_on_focus: bool,
     /// Maximum live particles (0 = particles off).
     pub max_particles: u32,
     /// RenderAttachedParticles: the particles of what avatars wear (on;
@@ -1850,6 +1901,11 @@ pub struct Settings {
     /// FSDisableNeighbourRegionConnections, off): the neighbours are not
     /// shown, and crossings on foot or in vehicles are less reliable.
     pub no_neighbour_regions: bool,
+    /// Preferences › Network and cache › Proxy (the Legacy Viewer's
+    /// floater_preferences_proxy.xml): read at startup (`proxy.rs`), applied
+    /// at the next start. The SOCKS 5 user name and password are in the
+    /// credential store (`credentials::store_proxy`), never here.
+    pub proxy: aurora_proxy::ProxySettings,
     pub parcel_visibility: crate::world::parcel_visibility::Settings,
     /// Width of the local chat input in the bottom bar (px, 0 = skin default).
     pub chat_bar_width: f32,
@@ -1951,7 +2007,7 @@ pub(crate) fn max_texture_resolution_choice(v: u32) -> u32 {
         .unwrap_or(MAX_TEXTURE_RESOLUTIONS[0])
 }
 
-const SETTINGS_VERSION: u32 = 40;
+const SETTINGS_VERSION: u32 = 42;
 
 /// The world render percentage that draws at the display's logical
 /// resolution, as the Legacy Viewer does on a Mac with RenderHiDPI 0: 50 on
@@ -2351,6 +2407,8 @@ impl Default for Settings {
             draw_distance_stepping: false,
             draw_distance_stepping_interval: 20,
             draw_stepping: None,
+            autotune: Default::default(),
+            autotune_hold: None,
             gpu_adapter: String::new(),
             gpu_driver_dismissed: String::new(),
             allow_overlays: false,
@@ -2438,6 +2496,7 @@ impl Default for Settings {
             show_appearance: false,
             appearance_fill_previews: false,
             wearable_favorites_sort: Default::default(),
+            wearable_favorites_order: Default::default(),
             appearance_tab: 0,
             show_ao: false,
             ao: Default::default(),
@@ -2483,7 +2542,8 @@ impl Default for Settings {
             colon_emote: false,
             auto_close_ooc: false,
             chat_mention_autocomplete: true,
-            autohide_chat_bar: false,
+            chat_bar: ChatBar::Always,
+            former_autohide_chat_bar: None,
             show_contacts_tab: true,
             conversations_own_windows: false,
             send_typing_state: true,
@@ -2512,6 +2572,7 @@ impl Default for Settings {
             pie_opacity_override: false,
             pie_opacity: crate::ui::surface_opacity::PIE,
             flash_unread_conversations: true,
+            chat_latest_button: true,
             flash_conversations_button: true,
             flash_conversations_nearby: true,
             announce_incoming_im: false,
@@ -2676,6 +2737,9 @@ impl Default for Settings {
             fly_override_warned: false,
             avatar_align_mini: false,
             block_click_sit: false,
+            rigged_click_animesh: true,
+            rigged_click_own: false,
+            rigged_click_others: false,
             large_surface_protection: false,
             large_surface_prim_threshold: 75.0,
             large_surface_sculpt_threshold: 150.0,
@@ -2718,6 +2782,7 @@ impl Default for Settings {
             background_fps_limit: 15,
             background_gpu_pause: true,
             gpu_recovery: true,
+            gaming_mode_leave_on_focus: true,
             max_particles: 4096,
             attached_particles: true,
             tracker_beacon: true,
@@ -2763,6 +2828,7 @@ impl Default for Settings {
             bandwidth_kbps: aurora_net::throttle::DEFAULT_KBPS as u32,
             download_connections: DownloadConnections::Automatic,
             no_neighbour_regions: false,
+            proxy: Default::default(),
             parcel_visibility: Default::default(),
             chat_bar_width: 0.0,
             chat_island_width: 0.0,
@@ -3450,6 +3516,21 @@ impl Settings {
                 self.inventory.recent_sort.system_first = false;
             }
         }
+        // Main's version 40 still saved the old switch. Builds that already
+        // offered the three modes saved only chat_bar at the same version.
+        // A missing choice takes ChatBar's default during deserialization.
+        if let Some(autohide) = self.former_autohide_chat_bar.take()
+            && self.settings_version < 41
+        {
+            self.chat_bar = if autohide { ChatBar::WhenTyping } else { ChatBar::Always };
+        }
+        if self.settings_version < 42 {
+            // the Instant movement is still experimental, and "All in Aurora
+            // version" turned it on with the rest: every earlier file goes
+            // back once to the simulator's movement (Legacy), its row in
+            // Preferences › Aurora keeps Instant as a choice
+            self.predict_own_motion = false;
+        }
         if !self.audio.mic_gain.is_finite() {
             self.audio.mic_gain = 1.0;
         }
@@ -3468,6 +3549,7 @@ impl Settings {
         self.settings_version = SETTINGS_VERSION;
         self.max_particles = self.max_particles.min(8192);
         self.max_avatars = self.max_avatars.clamp(1, 100);
+        self.autotune.sanitize();
         self.local_light_count = self.local_light_count.min(crate::scene::lights::MAX_LIGHTS as u32);
         self.complexity_mode = self.complexity_mode.min(2);
         self.avatar_physics_detail = if self.avatar_physics_detail.is_finite() {
@@ -3666,6 +3748,7 @@ impl Settings {
         }
         if let Some(toolbar) = &mut self.toolbar {
             changed |= toolbar.migrate_vr_button();
+            changed |= toolbar.migrate_director_button();
         }
         if !self.legacy_toolbars.is_empty() {
             self.legacy_toolbars.clear();
@@ -3704,12 +3787,13 @@ impl Settings {
         };
     }
 
-    /// The settings as they are now, written by the save thread
-    /// (settings/saver.rs): the frame thread does not wait for the disk.
+    /// The settings as they are now, written by a save thread (saves.rs):
+    /// the frame thread does not wait for the disk, and a save not started
+    /// yet is replaced by the newer one.
     pub fn save(&self) {
         let copy = self.to_saved();
         let path = Self::path();
-        saver::get().queue(Box::new(move || {
+        crate::saves::replace(path.clone(), move || {
             if let Some(dir) = path.parent()
                 && let Err(e) = std::fs::create_dir_all(dir)
             {
@@ -3717,15 +3801,7 @@ impl Settings {
                 return;
             }
             copy.write_saved(&path);
-        }));
-    }
-
-    /// Until the saves asked for are written, `timeout` at most: before
-    /// the viewer ends.
-    pub fn wait_saved(timeout: std::time::Duration) {
-        if !saver::get().wait(timeout) {
-            log::warn!("settings: the last save was not written within {timeout:?}");
-        }
+        });
     }
 
     /// What is written to the file: the user's own graphics values while
@@ -3741,6 +3817,11 @@ impl Settings {
         // the draw distance being stepped: the user's
         if let Some(steps) = copy.draw_stepping.take() {
             copy.draw_distance = steps.user;
+        }
+        // the values Autotune holds: the user's (after the two above, whose
+        // own values the hold leaves alone)
+        if let Some(hold) = copy.autotune_hold.take() {
+            hold.restore(&mut copy);
         }
         if !copy.remember_username {
             copy.username.clear();
@@ -3821,6 +3902,15 @@ impl Settings {
             volume_threshold: self.large_surface_prim_threshold,
             sculpt_threshold: self.large_surface_sculpt_threshold,
             frame_max: self.large_surface_frame_max,
+        }
+    }
+
+    /// The rigged meshes a left click acts on (scene/drawn.rs).
+    pub fn rigged_clicks(&self) -> crate::scene::drawn::RiggedClicks {
+        crate::scene::drawn::RiggedClicks {
+            animesh: self.rigged_click_animesh,
+            own: self.rigged_click_own,
+            others: self.rigged_click_others,
         }
     }
 
@@ -4579,6 +4669,24 @@ mod tests {
     }
 
     #[test]
+    fn only_animesh_take_a_left_click_by_default_and_each_choice_round_trips() {
+        use crate::scene::drawn::RiggedClicks;
+        let missing: Settings = serde_json::from_str("{}").expect("old settings without the preferences");
+        assert_eq!(missing.rigged_clicks(), RiggedClicks::default());
+        assert!(missing.rigged_click_animesh && !missing.rigged_click_own && !missing.rigged_click_others);
+
+        for (animesh, own, others) in [(false, false, false), (true, true, false), (true, false, true)] {
+            let mut changed = missing.clone();
+            changed.rigged_click_animesh = animesh;
+            changed.rigged_click_own = own;
+            changed.rigged_click_others = others;
+            let saved = serde_json::to_value(&changed).expect("save the preferences");
+            let loaded: Settings = serde_json::from_value(saved).expect("reload the preferences");
+            assert_eq!(loaded.rigged_clicks(), RiggedClicks { animesh, own, others }, "each switch alone");
+        }
+    }
+
+    #[test]
     fn a_shutter_turned_off_in_the_interface_sounds_stays_quiet() {
         let fresh: super::Settings = serde_json::from_str("{}").expect("fresh settings");
         assert!(
@@ -5004,6 +5112,25 @@ mod tests {
         assert!(!chosen.sanitized().chat_keep_focus);
     }
 
+    /// The Instant movement goes back to the simulator's once, on every
+    /// earlier file; chosen again afterwards, it stays.
+    #[test]
+    fn instant_movement_goes_back_to_legacy_once() {
+        for version in [9, 41] {
+            let file = serde_json::json!({ "settings_version": version, "predict_own_motion": true });
+            let migrated = serde_json::from_value::<Settings>(file).expect("load settings").sanitized();
+            assert!(!migrated.predict_own_motion, "version {version}");
+            assert_eq!(migrated.settings_version, SETTINGS_VERSION);
+        }
+        let chosen = Settings {
+            predict_own_motion: true,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&chosen).expect("save settings");
+        let reloaded = serde_json::from_str::<Settings>(&json).expect("reload settings").sanitized();
+        assert!(reloaded.predict_own_motion, "a choice made after the update stays");
+    }
+
     #[test]
     fn recent_sort_migration_changes_only_the_former_default_and_only_once() {
         use crate::ui::inventory::view::Sort;
@@ -5062,6 +5189,50 @@ mod tests {
         assert!(!loaded.inventory.recent_sort.system_first);
         assert_eq!(loaded.inventory.sort, Settings::default().inventory.sort);
         assert_eq!(loaded.inventory.received_sort, Settings::default().inventory.received_sort);
+    }
+
+    /// "Hide the chat bar when not in use" became the "Chat bar" choice
+    /// (#2696): on is "Shown when typing", anything else "Always shown",
+    /// once for earlier files; a choice made since stays.
+    #[test]
+    fn chat_bar_is_always_shown_by_default_and_once_for_earlier_files() {
+        assert_eq!(Settings::default().sanitized().chat_bar, ChatBar::Always);
+        let read = |file: serde_json::Value| serde_json::from_value::<Settings>(file).expect("read settings").sanitized();
+        for version in [0, 16, 33, 34, 35, 36, 37, 38, 39, 40] {
+            let on = read(serde_json::json!({ "settings_version": version, "autohide_chat_bar": true }));
+            assert_eq!(on.chat_bar, ChatBar::WhenTyping, "version {version}");
+            assert_eq!(on.settings_version, SETTINGS_VERSION);
+            let off = read(serde_json::json!({ "settings_version": version, "autohide_chat_bar": false }));
+            assert_eq!(off.chat_bar, ChatBar::Always, "version {version}");
+            let absent = read(serde_json::json!({ "settings_version": version }));
+            assert_eq!(absent.chat_bar, ChatBar::Always, "version {version}");
+        }
+        // Version 40 from the three-mode viewer already stored each choice.
+        for mode in [ChatBar::Always, ChatBar::WhenTyping, ChatBar::ConversationsOnly] {
+            let file = serde_json::json!({ "settings_version": 40, "chat_bar": mode });
+            let migrated = read(file);
+            assert_eq!(migrated.chat_bar, mode);
+            assert_eq!(migrated.settings_version, SETTINGS_VERSION);
+            assert_eq!(read(serde_json::to_value(migrated).expect("save settings")).chat_bar, mode);
+        }
+        // saved: the choice, without the former switch
+        let saved =
+            serde_json::to_value(read(serde_json::json!({ "settings_version": 33, "autohide_chat_bar": true }))).expect("serialize");
+        assert_eq!(saved["chat_bar"], serde_json::json!("WhenTyping"));
+        assert!(saved.get("autohide_chat_bar").is_none());
+        // chosen since: kept, even with the switch an older build wrote back
+        for autohide in [None, Some(false), Some(true)] {
+            let mut file = serde_json::json!({ "settings_version": SETTINGS_VERSION, "chat_bar": "ConversationsOnly" });
+            if let Some(on) = autohide {
+                file["autohide_chat_bar"] = serde_json::json!(on);
+            }
+            assert_eq!(read(file).chat_bar, ChatBar::ConversationsOnly, "{autohide:?}");
+        }
+        let again = Settings {
+            chat_bar: ChatBar::Always,
+            ..Settings::default()
+        };
+        assert_eq!(again.sanitized().chat_bar, ChatBar::Always);
     }
 
     /// ArrowKeysAlwaysMove is off in the Legacy Viewer: the arrows move the

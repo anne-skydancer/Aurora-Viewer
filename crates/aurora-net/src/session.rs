@@ -23,6 +23,7 @@ mod inventory_upload;
 mod object_actions;
 mod object_cache;
 mod object_watch;
+mod proxy;
 mod render_info_net;
 mod scripts;
 mod sim_requests;
@@ -52,6 +53,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
+
+use crate::circuit_socket::CircuitSocket;
+use proxy::login_failed;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -300,7 +304,7 @@ async fn post_appearance_request(http: &reqwest::Client, request: appearance_que
 
 struct Session<'a> {
     sh: &'a Shared,
-    sock: Arc<UdpSocket>,
+    sock: Arc<CircuitSocket>,
     login: Arc<LoginResponse>,
     sims: HashMap<SocketAddr, Sim>,
     main: Option<SocketAddr>,
@@ -456,6 +460,15 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
             fraction: 0.1,
         },
     );
+    // The proxy first (LLStartUp::startLLProxy, before the login): a proxy
+    // that cannot be used stops here, before any request leaves.
+    let mut association = match proxy::start(sh).await {
+        Ok(association) => association,
+        Err(error) => {
+            emit(sh, login_failed(error));
+            return;
+        }
+    };
     let login = match login::login(&sh.login_http, &req).await {
         Ok(l) => Arc::new(l),
         Err(e) => {
@@ -500,10 +513,16 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
         },
     );
 
-    let sock = match UdpSocket::bind("0.0.0.0:0").await {
+    // the relay's family: an IPv6 proxy needs an IPv6 socket
+    let ipv6 = association.as_ref().is_some_and(|a| a.relay().is_ipv6());
+    let sock = match crate::circuit_socket::bind(ipv6).await {
         Ok(s) => {
             size_socket_buffers(&s);
-            Arc::new(s)
+            let s = Arc::new(s);
+            Arc::new(match association.as_ref() {
+                Some(a) => CircuitSocket::relayed(s, a.relay(), a.announced()),
+                None => CircuitSocket::direct(s),
+            })
         }
         Err(e) => {
             emit(
@@ -610,7 +629,8 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
             r = sock.recv_from(&mut buf) => {
                 woke = Instant::now();
                 match r {
-                    Ok((n, from)) => s.on_datagram(&buf[..n], from),
+                    Ok(Some((range, from))) => s.on_datagram(&buf[range], from),
+                    Ok(None) => {}
                     Err(e) => {
                         // Windows reports ICMP port unreachable as recv errors.
                         log::debug!("udp recv error: {e}");
@@ -620,6 +640,20 @@ pub(crate) async fn run_session(sh: &Shared, req: LoginRequest, cmd_rx: &mut mps
             _ = tick.tick() => {
                 woke = Instant::now();
                 s.tick();
+            }
+            _ = proxy::closed(&mut association) => {
+                // the proxy ended the relay: the circuits are gone with it,
+                // and nothing may go direct instead
+                woke = Instant::now();
+                log::warn!("SOCKS 5 control channel closed: session ended");
+                emit(
+                    s.sh,
+                    NetEvent::Disconnected {
+                        reason: aurora_i18n::tr!("proxy-socks-lost").into(),
+                        lost: true,
+                    },
+                );
+                s.finished = true;
             }
             c = cmd_rx.recv() => {
                 woke = Instant::now();
@@ -1860,6 +1894,26 @@ impl Session<'_> {
                     }
                 }
             }
+            NetCommand::OfferInventory {
+                session,
+                to,
+                id,
+                message,
+                bucket,
+                receipt,
+            } => {
+                if session == self.session_id() && !self.finished && self.logout_started.is_none() {
+                    let offer = self.im_dialog(to, crate::offer_hosts::INVENTORY_OFFERED, id, &message, bucket);
+                    if let Some(sim) = self.main.and_then(|addr| self.sims.get_mut(&addr)) {
+                        sim.circuit.send_offer(&self.sock, &self.sh.stats, &offer, receipt);
+                    }
+                }
+            }
+            NetCommand::CheckInventoryOffer { session, items, reply } => {
+                if session == self.session_id() && !self.finished && self.logout_started.is_none() {
+                    self.fetch_items(items, self.agent_id(), false, Some(reply));
+                }
+            }
             NetCommand::SendImDialog {
                 to,
                 dialog,
@@ -1867,16 +1921,7 @@ impl Session<'_> {
                 message,
                 bucket,
             } => {
-                let mut m = ImprovedInstantMessage::default();
-                m.agent_data.agent_id = self.agent_id();
-                m.agent_data.session_id = self.session_id();
-                let b = &mut m.message_block;
-                b.to_agent_id = to;
-                b.dialog = dialog;
-                b.id = id;
-                b.from_agent_name = str_field(&format!("{} {}", self.login.first_name, self.login.last_name));
-                b.message = str_field(&message);
-                b.binary_bucket = if bucket.is_empty() { vec![0] } else { bucket };
+                let m = self.im_dialog(to, dialog, id, &message, bucket);
                 // an offer's answer goes to the simulator that holds it, a
                 // neighbour's included; anything else through the agent's region
                 match self.offer_hosts.answer_to(dialog, id, |host| self.sims.contains_key(&host)) {
@@ -2444,8 +2489,8 @@ impl Session<'_> {
                 owner,
                 library,
             } => self.fetch_inventory_tree(request, parent, children, depth, owner, library),
-            NetCommand::FetchItems { items, owner } => self.fetch_items(items, owner, false),
-            NetCommand::FetchAttachmentItems { items } => self.fetch_items(items, self.agent_id(), true),
+            NetCommand::FetchItems { items, owner } => self.fetch_items(items, owner, false, None),
+            NetCommand::FetchAttachmentItems { items } => self.fetch_items(items, self.agent_id(), true, None),
             NetCommand::FetchInventoryOrphans { request } => {
                 let ais = self.main_cap("InventoryAPIv3");
                 let legacy = self.main_cap("FetchInventoryDescendents2");
@@ -3425,6 +3470,20 @@ impl Session<'_> {
         self.send_main(&m, true);
     }
 
+    fn im_dialog(&self, to: uuid::Uuid, dialog: u8, id: uuid::Uuid, message: &str, bucket: Vec<u8>) -> ImprovedInstantMessage {
+        let mut m = ImprovedInstantMessage::default();
+        m.agent_data.agent_id = self.agent_id();
+        m.agent_data.session_id = self.session_id();
+        let b = &mut m.message_block;
+        b.to_agent_id = to;
+        b.dialog = dialog;
+        b.id = id;
+        b.from_agent_name = str_field(&format!("{} {}", self.login.first_name, self.login.last_name));
+        b.message = str_field(message);
+        b.binary_bucket = if bucket.is_empty() { vec![0] } else { bucket };
+        m
+    }
+
     fn send_im(&mut self, to: uuid::Uuid, text: &str, dialog: u8) {
         let mut m = ImprovedInstantMessage::default();
         m.agent_data.agent_id = self.agent_id();
@@ -3842,40 +3901,66 @@ impl Session<'_> {
         }
     }
 
-    fn fetch_items(&mut self, items: Vec<uuid::Uuid>, owner: uuid::Uuid, attachment: bool) {
-        if owner == self.agent_id()
-            && let Some(cap) = self.main_cap("InventoryAPIv3")
-        {
-            let http = self.sh.caps_http.clone();
-            let events = self.sh.events.clone();
-            tokio::spawn(async move {
-                for chunk in items.chunks(16) {
-                    let reads = crate::inventory::ais::read_items(&http, &cap, owner, chunk).await;
-                    send_item_reads(&events, reads, attachment);
-                }
-            });
-            return;
-        }
-        let Some(url) = self.main_cap("FetchInventory2") else {
-            emit(self.sh, NetEvent::InventoryItemsFailed { items });
-            return;
-        };
+    fn fetch_items(
+        &self,
+        items: Vec<uuid::Uuid>,
+        owner: uuid::Uuid,
+        attachment: bool,
+        offer_reply: Option<crossbeam_channel::Sender<crate::inventory::ais::ItemReads>>,
+    ) {
+        use crate::inventory::ais::ItemReads;
+        let ais = (owner == self.agent_id()).then(|| self.main_cap("InventoryAPIv3")).flatten();
+        let legacy = self.main_cap("FetchInventory2");
         let http = self.sh.caps_http.clone();
         let events = self.sh.events.clone();
-        tokio::spawn(async move {
-            for chunk in items.chunks(50) {
-                let body = crate::inventory::fetch_items_body(chunk, owner);
-                let reads = match caps::post_llsd(&http, &url, &body).await {
-                    Ok(v) => crate::inventory::item_reads(&v, chunk),
-                    Err(e) => {
-                        log::warn!("item fetch failed: {e}");
-                        crate::inventory::ais::ItemReads {
-                            failed: chunk.to_vec(),
-                            ..Default::default()
+        let private = offer_reply.is_some();
+        let read = async move {
+            let mut all = ItemReads::default();
+            let mut receive = |mut reads: ItemReads| {
+                if private {
+                    all.items.append(&mut reads.items);
+                    all.missing.append(&mut reads.missing);
+                    all.failed.append(&mut reads.failed);
+                } else {
+                    send_item_reads(&events, reads, attachment);
+                }
+            };
+            if let Some(cap) = ais {
+                for chunk in items.chunks(16) {
+                    receive(crate::inventory::ais::read_items(&http, &cap, owner, chunk).await);
+                }
+            } else if let Some(url) = legacy {
+                for chunk in items.chunks(50) {
+                    let body = crate::inventory::fetch_items_body(chunk, owner);
+                    let reads = match caps::post_llsd(&http, &url, &body).await {
+                        Ok(doc) => crate::inventory::item_reads(&doc, chunk),
+                        Err(e) => {
+                            log::warn!("item fetch failed: {e}");
+                            ItemReads {
+                                failed: chunk.to_vec(),
+                                ..Default::default()
+                            }
                         }
-                    }
-                };
-                send_item_reads(&events, reads, attachment);
+                    };
+                    receive(reads);
+                }
+            } else {
+                receive(ItemReads {
+                    failed: items,
+                    ..Default::default()
+                });
+            }
+            all
+        };
+        tokio::spawn(async move {
+            if let Some(reply) = offer_reply {
+                // A stalled inventory server must release the private check.
+                // Dropping its sender leaves the original reserved for a manual recheck.
+                if let Ok(reads) = tokio::time::timeout(crate::inventory::ais::REQUEST_TIMEOUT, read).await {
+                    let _ = reply.try_send(reads);
+                }
+            } else {
+                read.await;
             }
         });
     }
@@ -6747,6 +6832,85 @@ mod event_queue_tests {
         }
     }
 
+    #[tokio::test]
+    async fn inventory_offer_keeps_its_wire_dialog_and_an_old_login_cannot_send_or_read() {
+        use crate::InventoryOfferStatus::{Acknowledged, Transmitted};
+        use crossbeam_channel::{TryRecvError, unbounded};
+
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        sock.writable().await.unwrap();
+        let simulator = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let main = simulator.local_addr().unwrap();
+        let neighbour = "127.0.0.1:13002".parse().unwrap();
+        let (events, received) = unbounded();
+        let sh = shared(crate::EventSender(events));
+        let mut session = two_regions(&sh, sock, main, neighbour);
+        let current = session.session_id();
+        let previous = Uuid::from_u128(94);
+        let id = Uuid::from_u128(10);
+        let to = Uuid::from_u128(11);
+        let mut bucket = vec![6];
+        bucket.extend_from_slice(Uuid::from_u128(12).as_bytes());
+        let offer = |login, receipt| NetCommand::OfferInventory {
+            session: login,
+            to,
+            id,
+            message: "Fixture".into(),
+            bucket: bucket.clone(),
+            receipt,
+        };
+        let (send, stale) = unbounded();
+        session.on_command(offer(previous, send));
+        assert_eq!(stale.try_recv(), Err(TryRecvError::Disconnected));
+        let (send, stale) = unbounded();
+        session.on_command(NetCommand::CheckInventoryOffer {
+            session: previous,
+            items: vec![id],
+            reply: send,
+        });
+        assert_eq!(stale.try_recv(), Err(TryRecvError::Disconnected));
+
+        let (send, receipt) = unbounded();
+        session.on_command(offer(current, send));
+        assert_eq!(receipt.try_recv(), Ok(Transmitted));
+        let mut bytes = [0; 1500];
+        let (len, _) = tokio::time::timeout(Duration::from_secs(2), simulator.recv_from(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        let packet = parse_packet(&bytes[..len]).unwrap();
+        let wire: ImprovedInstantMessage = packet.decode().unwrap();
+        assert_eq!(wire.message_block.dialog, 4);
+        assert_eq!(wire.message_block.to_agent_id, to);
+        assert_eq!(wire.message_block.id, id);
+        assert_eq!(wire.message_block.message, str_field("Fixture"));
+        assert_eq!(wire.message_block.binary_bucket, bucket);
+        session.main = Some(neighbour);
+        session.sims.get_mut(&main).unwrap().circuit.ack_received([packet.sequence]);
+        assert_eq!(receipt.try_recv(), Ok(Acknowledged));
+        assert_eq!(receipt.try_recv(), Err(TryRecvError::Disconnected));
+
+        // Absence of a read capability is inconclusive. Only the requester
+        // receives the result, even when it arrives from a different region.
+        let (send, reply) = unbounded();
+        session.on_command(NetCommand::CheckInventoryOffer {
+            session: current,
+            items: vec![id],
+            reply: send,
+        });
+        let reads = tokio::task::spawn_blocking(move || reply.recv_timeout(Duration::from_secs(2)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reads.failed, [id]);
+        assert!(reads.items.is_empty() && reads.missing.is_empty());
+        assert!(received.try_recv().is_err());
+        session.logout_started = Some(Instant::now());
+        let (send, closing) = unbounded();
+        session.on_command(offer(current, send));
+        assert_eq!(closing.try_recv(), Err(TryRecvError::Disconnected));
+    }
+
     /// #3347: an object in a neighbouring region (camera shopping) offers
     /// through that region's circuit; its answer goes back there, as
     /// LLOfferInfo::mHost, not to the agent's region, which would not know
@@ -6877,9 +7041,9 @@ mod event_queue_tests {
 
     pub(super) fn shared(events: crate::EventSender) -> Shared {
         Shared {
-            http: reqwest::Client::new(),
-            login_http: reqwest::Client::new(),
-            caps_http: reqwest::Client::new(),
+            http: crate::test_http_client(),
+            login_http: crate::test_http_client(),
+            caps_http: crate::test_http_client(),
             events,
             controls: Arc::new(Mutex::new(AgentControls::default())),
             stats: Arc::new(NetStats::default()),
@@ -6922,7 +7086,7 @@ mod event_queue_tests {
         let (inventory_udp_tx, _) = mpsc::unbounded_channel();
         Session {
             sh,
-            sock,
+            sock: std::sync::Arc::new(crate::circuit_socket::CircuitSocket::direct(sock)),
             login,
             sims: [(main_addr, Sim::new(main_addr, 10)), (neighbour_addr, Sim::new(neighbour_addr, 20))].into(),
             main: Some(main_addr),
@@ -7226,9 +7390,9 @@ mod script_dialog_tests {
 
     pub(in crate::session) fn test_shared(events: crossbeam_channel::Sender<(Instant, NetEvent)>) -> Shared {
         Shared {
-            http: reqwest::Client::new(),
-            login_http: reqwest::Client::new(),
-            caps_http: reqwest::Client::new(),
+            http: crate::test_http_client(),
+            login_http: crate::test_http_client(),
+            caps_http: crate::test_http_client(),
             events: crate::EventSender(events),
             controls: Arc::new(Mutex::new(AgentControls::default())),
             stats: Arc::new(NetStats::default()),
@@ -7278,7 +7442,7 @@ mod script_dialog_tests {
         let (inventory_udp_tx, _) = mpsc::unbounded_channel();
         Session {
             sh,
-            sock,
+            sock: std::sync::Arc::new(crate::circuit_socket::CircuitSocket::direct(sock)),
             login: test_login(main.port()),
             sims,
             main: Some(main),
