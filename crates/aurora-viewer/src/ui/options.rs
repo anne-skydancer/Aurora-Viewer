@@ -69,6 +69,7 @@ pub enum Page {
     Inventory,
     Controls,
     Gamepad,
+    GameControls,
     Shortcuts,
     Commands,
     System,
@@ -77,7 +78,7 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 24] = [
+    pub const ALL: [Page; 25] = [
         Page::Aurora,
         Page::Graphics,
         Page::Camera,
@@ -97,6 +98,7 @@ impl Page {
         Page::Inventory,
         Page::Controls,
         Page::Gamepad,
+        Page::GameControls,
         Page::Shortcuts,
         Page::Commands,
         Page::System,
@@ -126,6 +128,7 @@ impl Page {
             Page::Inventory => "inventory",
             Page::Controls => "controls",
             Page::Gamepad => "gamepad",
+            Page::GameControls => "game-controls",
             Page::Shortcuts => "shortcuts",
             Page::Commands => "commands",
             Page::System => "system",
@@ -155,6 +158,7 @@ impl Page {
             Page::Inventory => aurora_i18n::tr!("common-inventory"),
             Page::Controls => aurora_i18n::tr!("ui-options-page-controls"),
             Page::Gamepad => aurora_i18n::tr!("joystick-gamepad"),
+            Page::GameControls => aurora_i18n::tr!("game-control-title"),
             Page::Shortcuts => aurora_i18n::tr!("ui-options-shortcuts"),
             Page::Commands => aurora_i18n::tr!("ui-options-commands"),
             Page::System => aurora_i18n::tr!("ui-options-page-system"),
@@ -185,6 +189,7 @@ impl Page {
             Page::Inventory => aurora_i18n::tr!("ui-options-about-inventory"),
             Page::Controls => aurora_i18n::tr!("ui-options-about-controls"),
             Page::Gamepad => aurora_i18n::tr!("ui-options-about-gamepad"),
+            Page::GameControls => aurora_i18n::tr!("game-control-about"),
             Page::Shortcuts => aurora_i18n::tr!("ui-options-click-a-shortcut-then-press-the-desired-key-or"),
             Page::Commands => aurora_i18n::tr!("ui-options-about-commands"),
             Page::System => aurora_i18n::tr!("ui-options-about-system"),
@@ -215,6 +220,9 @@ impl Page {
             Page::Inventory => "box",
             Page::Controls => "mouse-filled",
             Page::Gamepad => "device-gamepad-filled",
+            // (the gamepad's icon is the Gamepad page's; this one sends to
+            // scripts and maps actions)
+            Page::GameControls => "device-gamepad-2-filled",
             Page::Shortcuts => "keyboard-filled",
             Page::Commands => "square-rounded-chevron-right-filled",
             Page::System => "world-filled",
@@ -406,6 +414,18 @@ pub struct OptionsUi {
     /// RLVa `@sendim`: the Do Not Disturb response is an IM, its field greyed.
     pub rlva_sendim_locked: bool,
     pub joystick: crate::joystick::Snapshot,
+    /// Game Controls: the controllers and the data sent (set by the app).
+    pub game_control: crate::game_control::View,
+    /// The mode whose mappings are edited (None: the live one).
+    game_control_mode: Option<crate::game_control::Mode>,
+    /// A binding waiting for the controller's next input (the app stops
+    /// sending and driving meanwhile).
+    pub game_control_capture: Option<pages::game_controls::Capture>,
+    /// The device of the two device tabs.
+    game_control_device: String,
+    game_control_show_all: bool,
+    /// Auto calibrate under way (sampled by the app).
+    pub game_control_calibration: Option<pages::game_controls::Calibration>,
     pub vr_default_resolution: Option<[u32; 2]>,
     pub flycam_active: bool,
     pub anti_spam_blocks: Vec<(crate::world::anti_spam::Queue, uuid::Uuid, String)>,
@@ -723,6 +743,9 @@ pub struct OptionsResult {
     pub restore_layout: Option<String>,
     /// The camera settings went back to their defaults: the view follows.
     pub reset_camera: bool,
+    /// "Show the Contacts tab" turned on: a torn-off Contacts goes back
+    /// into Conversations.
+    pub show_contacts_tab_on: bool,
     /// Show the folder of the conversation transcripts.
     pub open_chat_logs: bool,
     /// Choose another folder for the cache or the transcripts, or go back
@@ -767,6 +790,9 @@ pub enum Folder {
     ChatLogs,
     /// A Legacy Viewer's transcripts, to import.
     LegacyLogs,
+    /// The interface language file (Language and updates): a file, asked
+    /// for the same way.
+    LanguageFile,
 }
 
 /// The window that shows what will be imported.
@@ -811,7 +837,9 @@ fn media_pack_error(failure: aurora_updater::Failure) -> &'static str {
     match failure {
         Failure::Network | Failure::Busy | Failure::Startup => aurora_i18n::tr!("media-plugins-error-network"),
         Failure::Integrity | Failure::Package => aurora_i18n::tr!("media-plugins-error-integrity"),
-        Failure::Filesystem => aurora_i18n::tr!("media-plugins-error-filesystem"),
+        // the media pack goes to the user's own data folder: `Protected`
+        // (a sandbox or another account's folder) never comes from it
+        Failure::Filesystem | Failure::Protected => aurora_i18n::tr!("media-plugins-error-filesystem"),
         // the media pack goes to the data folder: never a drive root's
         Failure::Unsupported | Failure::DriveRoot => aurora_i18n::tr!("media-plugins-error-unsupported"),
     }
