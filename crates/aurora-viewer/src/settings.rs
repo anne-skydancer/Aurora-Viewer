@@ -490,6 +490,11 @@ pub struct DebugView {
     pub check_probe_sets: bool,
     pub probes: bool,
     pub skeletons: bool,
+    /// The avatars' hitboxes with the Legacy Viewer's Avatar Hitboxes parity
+    /// (Developer › Render Metadata › Avatar Hitboxes): the avatar's own
+    /// oriented box, half its scale in either direction. Visual parity only:
+    /// picking still tests the fixed click box (see `scene::picking`).
+    pub avatar_hitboxes: bool,
     /// Detail level of the objects around the pointer, with the distance
     /// and the radius it comes from (Firestorm: Develop › Render Metadata ›
     /// LOD Info).
@@ -530,7 +535,14 @@ impl DebugView {
 
     /// An overlay drawn over the 3D view is on.
     pub fn any_overlay(&self) -> bool {
-        self.bounds || self.culling || self.lights || self.glow_objects || self.probes || self.skeletons || self.lod_info
+        self.bounds
+            || self.culling
+            || self.lights
+            || self.glow_objects
+            || self.probes
+            || self.skeletons
+            || self.avatar_hitboxes
+            || self.lod_info
     }
 }
 
@@ -660,6 +672,8 @@ pub struct Settings {
     pub pending_legacy_gamepad: Option<crate::joystick::Settings>,
     /// Ground foot geometry after wearing/detaching a body attachment.
     pub auto_hover_height: bool,
+    /// What the second camera frames (View › Second camera, Aurora's own).
+    pub second_camera_framing: crate::camera::second::Framing,
     /// Fixed adjustment added to each automatic grounding estimate (metres).
     pub auto_hover_offset: f32,
     /// None keeps the former shared hover options until the first login.
@@ -682,8 +696,6 @@ pub struct Settings {
     /// Requested position lock and options, independent for each avatar.
     pub bridge: std::collections::HashMap<uuid::Uuid, crate::world::bridge::Preferences>,
     pub movements: std::collections::HashMap<uuid::Uuid, crate::movement::Preferences>,
-    /// Swimming in prims named as water (#2008), for every account.
-    pub water_volumes: crate::movement::water_volume::Settings,
     /// Show Friends Only and keeping it after a teleport, for each account
     /// (FSRenderFriendsOnly, FSRenderFriendsOnlyPersistsTP: per-account settings).
     pub friends_only: std::collections::HashMap<uuid::Uuid, crate::world::friends_only::Preferences>,
@@ -692,6 +704,9 @@ pub struct Settings {
     pub parcel_music_accounts: std::collections::HashSet<uuid::Uuid>,
     /// Photo window (Firestorm's snapshot floater settings).
     pub snapshot: crate::snapshot::Settings,
+    /// The world look (Preferences › Graphics › Image): a stack of looks of
+    /// its own on the 3D view, apart from the photos' (`snapshot::looks`).
+    pub world_look: crate::snapshot::looks::WorldLook,
     /// Depth of field (Preferences › Graphics).
     pub dof: crate::dof::Settings,
     pub shape_show_hints: bool,
@@ -704,6 +719,12 @@ pub struct Settings {
     /// Viewer always does; Preferences › Avatars › Animations). Off, our
     /// avatar keeps its pose. Camera framing is controlled independently.
     pub customize_animation: bool,
+    /// FSPlayDefaultBentoAnimation: a priority 0 Bento pose plays under
+    /// every other animation, so hands, mouth, wings and tail fall back to
+    /// a natural pose instead of staying stuck where the last animation
+    /// left them (off, as in the Legacy Viewer; Preferences › Avatars ›
+    /// Animations).
+    pub bento_idle: bool,
     pub script_editor: crate::ui::scripts::settings::ScriptSettings,
     pub username: String,
     pub remember_username: bool,
@@ -766,6 +787,10 @@ pub struct Settings {
     pub env_persist: bool,
     /// The weather of this viewer (the Environment window's "Weather").
     pub weather: crate::weather::WeatherSettings,
+    /// Sky, water and day cycle lists A–Z instead of the inventory's order
+    /// (an Aurora switch on the lists, off: the order since #812; the
+    /// Legacy Viewer's lists are always by name).
+    pub env_lists_by_name: bool,
     /// Which stars the night sky shows: the real sky over Paris (Aurora's
     /// default) or the Legacy Viewer's random stars (world/night_sky.rs).
     pub night_sky: crate::world::night_sky::NightSky,
@@ -795,6 +820,11 @@ pub struct Settings {
     pub bloom: bool,
     /// The share of the light over the threshold it spreads (0.05 to 1).
     pub bloom_strength: f32,
+    /// Planet curvature (aurora_render::curvature, Aurora's own; the
+    /// Legacy Viewer draws the regions flat): off by default.
+    pub planet_curvature: bool,
+    /// The planet's radius (km), the Earth's by default.
+    pub planet_radius_km: f32,
     /// GPU occlusion culling: objects hidden behind others are not drawn
     /// (Firestorm UseOcclusion, on by default). Renamed from `gpu_occlusion`
     /// (off while it cost more than it saved) so that saved settings take
@@ -954,6 +984,9 @@ pub struct Settings {
     /// The Appearance tab shown at exit (gallery, outfit list, worn), shown
     /// again at the next start, as the Legacy Viewer's `LastAppearanceTab`.
     pub appearance_tab: u8,
+    /// The order of the Appearance outfits (FSOutfitListSortOrder and
+    /// OutfitGallerySortOrder, saved like them).
+    pub appearance_outfit_sort: crate::world::outfit_folders::Sort,
     pub show_ao: bool,
     /// Loading / teleport screens show the last view, blurred.
     pub loading_backdrop: bool,
@@ -1024,6 +1057,11 @@ pub struct Settings {
     /// viewer's notices (#475, off by default; Preferences > Chat). Not in
     /// the Legacy Viewer.
     pub compact_automated_chat: bool,
+    /// An emote ("/me waves") joins its sender's group under one header in
+    /// the Aurora style, instead of standing alone (off by default;
+    /// Preferences > Chat). An Aurora option; the Legacy Viewer always groups
+    /// emotes.
+    pub group_emotes: bool,
     /// With it, the system lines of the conversations (calls, automatic
     /// replies) too (off, the human's choice of 2026-10-24).
     pub compact_im_system_lines: bool,
@@ -1321,7 +1359,6 @@ pub struct Settings {
     /// Global RLVa opt-in. Session restrictions are never persisted.
     pub rlva_enabled: bool,
     pub rlva: crate::world::rlva::preferences::Preferences,
-    pub pose_requests: crate::world::poser_consent::Preferences,
     pub poser: crate::ik_edit::poser::Config,
     /// The pose stand's lock and last pose (FSPoseStandLock,
     /// FSPoseStandLastSelectedPose).
@@ -1451,9 +1488,6 @@ pub struct Settings {
     /// Preferences › Aurora › Behavior: make, wear and use the Aurora bridge
     /// (`world/bridge.rs`). On by default, as the Legacy Viewer's UseLSLBridge.
     pub use_bridge: bool,
-    /// Preferences › Aurora › Behavior: whose portals the bridge shows. Friends
-    /// by default; our own portals and returns are always shown.
-    pub portal_sources: crate::world::portals::Sources,
     /// Experimental filing of new deliveries by the sender's legacy name.
     pub sort_received_items: bool,
     pub received_items_since: i64,
@@ -1502,6 +1536,11 @@ pub struct Settings {
     /// (`crate::high_contrast`, #906) instead of the skin's colours, off by
     /// default.
     pub high_contrast: bool,
+    /// Preferences › Accessibility › Vision: skip the glass of windows,
+    /// bars, menus and dialogs (`crate::disable_glass`), off by default.
+    /// Surfaces stay opaque, without frosting the world. High contrast
+    /// already does this.
+    pub disable_glass: bool,
     /// Preferences › Appearance › Skin: the accent, background and text
     /// colours of the interface (`crate::interface_colors`), each the
     /// skin's by default.
@@ -1854,6 +1893,10 @@ pub struct Settings {
     /// Avatars still loading: 0 particle cloud + progress bar under the name
     /// (Firestorm), 1 progress bar only (drawn as they load), 2 nothing.
     pub loading_avatars: u8,
+    /// Aurora's own: while an avatar's worn objects are on their way, draw
+    /// copies of the ones kept from the last time (world/avatar_cache), then
+    /// the region's own.
+    pub avatar_cache: bool,
     /// RenderAvatarComplexityMode: 0 limit everyone, 1 always show friends
     /// fully, 2 show only friends.
     pub complexity_mode: u8,
@@ -1998,6 +2041,10 @@ pub(crate) const FONT_SCALE_MAX: f32 = 2.0;
 
 /// The default strength of the bloom (half of the light over its threshold).
 pub(crate) const BLOOM_STRENGTH: f32 = 0.5;
+/// Planet curvature's radius (km): the Earth's, and the slider's range.
+pub(crate) const PLANET_RADIUS_KM: f32 = aurora_render::curvature::EARTH_RADIUS / 1000.0;
+pub(crate) const PLANET_RADIUS_KM_RANGE: std::ops::RangeInclusive<f32> =
+    aurora_render::curvature::RADIUS_MIN / 1000.0..=aurora_render::curvature::RADIUS_MAX / 1000.0;
 
 /// RenderTonemapMix's default (settings.xml).
 pub(crate) const TONEMAP_MIX: f32 = 0.7;
@@ -2022,7 +2069,7 @@ pub(crate) fn max_texture_resolution_choice(v: u32) -> u32 {
         .unwrap_or(MAX_TEXTURE_RESOLUTIONS[0])
 }
 
-const SETTINGS_VERSION: u32 = 42;
+const SETTINGS_VERSION: u32 = 44;
 
 /// The world render percentage that draws at the display's logical
 /// resolution, as the Legacy Viewer does on a Mac with RenderHiDPI 0: 50 on
@@ -2249,6 +2296,15 @@ pub struct AudioSettings {
     pub mute_when_minimized: bool,
     /// Output device name (empty = system default).
     pub output_device: String,
+    /// Voice-only output device, the counterpart of the Legacy Viewer's
+    /// `VoiceOutputAudioDevice` (`LLPanelVoiceDeviceSettings`,
+    /// indra/newview/llpanelvoicedevicesettings.cpp). Two deliberate
+    /// differences: empty follows Aurora's `output_device`, where the Legacy
+    /// Viewer's "Default" is the system's default playout device
+    /// (indra/llwebrtc/llwebrtc.cpp); and a chosen device that is missing is
+    /// kept, voice playing on `output_device` until it comes back, where the
+    /// Legacy Viewer's panel rewrites the setting to "Default".
+    pub voice_output_device: String,
     /// Microphone name (empty = system default).
     pub input_device: String,
     /// Connect to voice chat.
@@ -2267,6 +2323,9 @@ pub struct AudioSettings {
     pub collision_sounds: bool,
     /// Sounds of other avatars' gestures (EnableGestureSounds, on).
     pub gesture_sounds: bool,
+    /// Where world sounds and media are heard from: the camera or the
+    /// avatar (MediaSoundsEarLocation, panel_preferences_sound.xml; camera).
+    pub media_sounds_ear: VoiceEar,
     /// Doppler shift of moving world sounds, 0 (off) to 2: the Legacy
     /// Viewer's is a fixed 1 (AUDIO_LEVEL_DOPPLER, llvieweraudio.cpp).
     pub doppler: f32,
@@ -2328,6 +2387,7 @@ impl Default for AudioSettings {
             stream_title_history: 10,
             mute_when_minimized: false,
             output_device: String::new(),
+            voice_output_device: String::new(),
             input_device: String::new(),
             voice_enabled: true,
             mic_hold: false,
@@ -2335,6 +2395,7 @@ impl Default for AudioSettings {
             mic_gain: 1.0,
             collision_sounds: true,
             gesture_sounds: true,
+            media_sounds_ear: VoiceEar::Camera,
             doppler: 1.0,
             sound_occlusion: true,
             sound_hrtf: false,
@@ -2349,7 +2410,8 @@ impl Default for AudioSettings {
     }
 }
 
-/// VoiceEarLocation (panel_preferences_sound.xml); SL exposes two choices.
+/// VoiceEarLocation and MediaSoundsEarLocation (panel_preferences_sound.xml):
+/// the same two choices for voice and for sounds and media.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VoiceEar {
     #[default]
@@ -2420,6 +2482,7 @@ impl Default for Settings {
             game_control: Default::default(),
             pending_legacy_gamepad: None,
             auto_hover_height: false,
+            second_camera_framing: Default::default(),
             auto_hover_offset: 0.0,
             hover_height_accounts: None,
             hover_height_account: None,
@@ -2433,6 +2496,7 @@ impl Default for Settings {
             shape_height_feet: false,
             customize_animation: true,
             appearance_camera_movement: true,
+            bento_idle: false,
             imports: Default::default(),
             script_editor: Default::default(),
             username: String::new(),
@@ -2462,6 +2526,7 @@ impl Default for Settings {
             env_manual_transition: 0.0,
             env_persist: true,
             weather: Default::default(),
+            env_lists_by_name: false,
             night_sky: Default::default(),
             night_sky_place: Default::default(),
             night_sky_latitude: crate::world::night_sky::LATITUDE as f32,
@@ -2474,6 +2539,8 @@ impl Default for Settings {
             glow: true,
             bloom: false,
             bloom_strength: BLOOM_STRENGTH,
+            planet_curvature: false,
+            planet_radius_km: PLANET_RADIUS_KM,
             occlusion_culling: true,
             lod_factor: 2.0,
             tree_lod_factor: 0.5,
@@ -2541,14 +2608,15 @@ impl Default for Settings {
             wearable_favorites_sort: Default::default(),
             wearable_favorites_order: Default::default(),
             appearance_tab: 0,
+            appearance_outfit_sort: Default::default(),
             show_ao: false,
             ao: Default::default(),
             bridge: Default::default(),
             movements: Default::default(),
-            water_volumes: Default::default(),
             friends_only: Default::default(),
             parcel_music_accounts: Default::default(),
             snapshot: Default::default(),
+            world_look: Default::default(),
             dof: Default::default(),
             loading_backdrop: true,
             mouse_sensitivity: 1.0,
@@ -2575,6 +2643,7 @@ impl Default for Settings {
             script_errors_to_channel: false,
             script_errors_channel: 1,
             compact_automated_chat: false,
+            group_emotes: false,
             compact_im_system_lines: false,
             blocked_chat: BlockedChat::Hidden,
             mark_unnamed_objects: false,
@@ -2672,7 +2741,6 @@ impl Default for Settings {
             anti_spam: Default::default(),
             rlva_enabled: false,
             rlva: Default::default(),
-            pose_requests: Default::default(),
             poser: Default::default(),
             pose_stand: Default::default(),
             autoresponse: Default::default(),
@@ -2714,7 +2782,6 @@ impl Default for Settings {
             predict_own_motion: false,
             synchronize_animations: false,
             use_bridge: true,
-            portal_sources: Default::default(),
             sort_received_items: false,
             received_items_since: 0,
             notify_deliveries: true,
@@ -2732,6 +2799,7 @@ impl Default for Settings {
             color_blindness: crate::colorblind::Deficiency::Off,
             color_blindness_strength: 1.0,
             high_contrast: false,
+            disable_glass: false,
             interface_colors: Default::default(),
             classic_controls: false,
             camera_shots: Vec::new(),
@@ -2846,6 +2914,7 @@ impl Default for Settings {
             max_attachment_area: 1000.0,
             complexity_notice_seconds: 0,
             loading_avatars: 0,
+            avatar_cache: true,
             complexity_mode: 0,
             avatar_physics: true,
             avatar_physics_detail: 1.0,
@@ -3267,6 +3336,12 @@ impl Settings {
         self.joystick.enabled = false;
     }
 
+    /// The radius of the planet the world is drawn on (m), None while the
+    /// curvature is off (FrameParams::curvature).
+    pub(crate) fn planet_radius(&self) -> Option<f32> {
+        self.planet_curvature.then_some(self.planet_radius_km * 1000.0)
+    }
+
     pub(crate) fn sanitized(mut self) -> Settings {
         if self.settings_version <= SETTINGS_VERSION {
             self.gamepad.migrate_gamepad_layout();
@@ -3590,6 +3665,19 @@ impl Settings {
             // Preferences › Aurora keeps Instant as a choice
             self.predict_own_motion = false;
         }
+        if self.settings_version < 43 {
+            // Aurora Weather's main and card switches, off by default: an
+            // earlier file keeps on what it drew (none of its own where
+            // regions set the weather)
+            self.weather.upgrade_to_switches();
+        }
+        // only the migration above reads the former region switch
+        self.weather.former_region_weather = None;
+        if self.settings_version < 44 {
+            // the wind's defaults, a breeze: a wind off and left still
+            // takes them, so that switching it on blows
+            self.weather.upgrade_wind_defaults();
+        }
         if !self.audio.enabled[VOICE_CHANNEL] {
             // this box used to switch a mixer channel of its own, leaving
             // voice connected and the microphone open: whoever unticked it
@@ -3692,6 +3780,12 @@ impl Settings {
             self.bloom_strength.clamp(0.05, 1.0)
         } else {
             BLOOM_STRENGTH
+        };
+        self.planet_radius_km = if self.planet_radius_km.is_finite() {
+            self.planet_radius_km
+                .clamp(*PLANET_RADIUS_KM_RANGE.start(), *PLANET_RADIUS_KM_RANGE.end())
+        } else {
+            PLANET_RADIUS_KM
         };
         self.lod_factor = self.lod_factor.clamp(0.5, 4.0);
         let area = |v: f32, default: f32| if v.is_finite() { v.clamp(0.0, 1.0e6) } else { default };
@@ -4249,6 +4343,25 @@ impl WaterEffectsSettings {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn voice_output_device_defaults_to_audio_output_and_survives_settings_round_trip() {
+        use super::Settings;
+
+        assert!(Settings::default().audio.voice_output_device.is_empty());
+        // An older settings file has no voice-specific output choice. Empty
+        // means the selected normal output remains in use.
+        let old: Settings = serde_json::from_str(r#"{"audio":{"output_device":"Speakers"}}"#).expect("older preferences");
+        assert_eq!(old.audio.output_device, "Speakers");
+        assert!(old.audio.voice_output_device.is_empty());
+
+        let mut settings = old;
+        settings.audio.voice_output_device = "Headset".into();
+        let saved = serde_json::to_vec(&settings).expect("save preferences");
+        let restored: Settings = serde_json::from_slice(&saved).expect("restore preferences");
+        assert_eq!(restored.audio.output_device, "Speakers");
+        assert_eq!(restored.audio.voice_output_device, "Headset");
+    }
+
+    #[test]
     fn avatar_only_hover_tips_are_off_by_default_and_for_older_preferences() {
         use super::HoverTips;
         assert!(!HoverTips::default().avatars);
@@ -4397,6 +4510,24 @@ mod tests {
             }
             .sanitized();
             assert_eq!(s.probe_range, kept, "{asked} m");
+        }
+    }
+
+    #[test]
+    fn planet_curvature_is_off_by_default_on_the_earth_and_kept_on_its_slider() {
+        let s = super::Settings::default();
+        assert!(!s.planet_curvature);
+        assert_eq!(s.planet_radius(), None);
+        assert_eq!(s.planet_radius_km, 6371.0);
+        for (asked, kept) in [(1.0, 1000.0), (6371.0, 6371.0), (1.0e9, 100_000.0), (f32::NAN, 6371.0)] {
+            let s = super::Settings {
+                planet_curvature: true,
+                planet_radius_km: asked,
+                ..Default::default()
+            }
+            .sanitized();
+            assert_eq!(s.planet_radius_km, kept, "{asked} km");
+            assert_eq!(s.planet_radius(), Some(kept * 1000.0));
         }
     }
 
@@ -5295,6 +5426,41 @@ mod tests {
         assert_eq!(loaded.inventory.received_sort, Settings::default().inventory.received_sort);
     }
 
+    /// A file from before Aurora Weather's switches turns on only the
+    /// weather it drew: with "Let regions set the weather" on, none of its
+    /// own, so the main switch stays off. A file from since keeps its
+    /// switch, whatever an older build wrote back.
+    #[test]
+    fn weather_from_before_the_switches_stays_off_where_regions_set_it() {
+        let read = |file: serde_json::Value| serde_json::from_value::<Settings>(file).expect("read settings").sanitized();
+        let own_weather = |regions: Option<bool>| {
+            let mut weather = serde_json::json!({ "amount": 0.6, "wind_max": 0.3, "aurora": true });
+            if let Some(on) = regions {
+                weather["region_weather"] = serde_json::json!(on);
+            }
+            weather
+        };
+        for version in [0, 41, 42] {
+            let regions = read(serde_json::json!({ "settings_version": version, "weather": own_weather(Some(true)) }));
+            assert!(!regions.weather.enabled, "version {version}");
+            assert!(regions.weather.precipitation_on && regions.weather.wind_on, "version {version}");
+            for regions in [None, Some(false)] {
+                let mine = read(serde_json::json!({ "settings_version": version, "weather": own_weather(regions) }));
+                assert!(mine.weather.enabled, "version {version}, {regions:?}");
+            }
+        }
+        let saved = serde_json::to_value(read(
+            serde_json::json!({ "settings_version": 42, "weather": own_weather(Some(true)) }),
+        ))
+        .expect("serialize");
+        assert!(saved["weather"].get("region_weather").is_none());
+        // switched on since: an older build's region switch changes nothing
+        let mut since = own_weather(Some(true));
+        since["enabled"] = serde_json::json!(true);
+        let kept = read(serde_json::json!({ "settings_version": SETTINGS_VERSION, "weather": since }));
+        assert!(kept.weather.enabled && kept.weather.former_region_weather.is_none());
+    }
+
     /// "Hide the chat bar when not in use" became the "Chat bar" choice
     /// (#2696): on is "Shown when typing", anything else "Always shown",
     /// once for earlier files; a choice made since stays.
@@ -6183,6 +6349,21 @@ mod tests {
             .join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&dir).expect("scratch folder");
         dir.join("settings.json")
+    }
+
+    #[test]
+    fn glow_off_survives_saving_and_loading_settings() {
+        let path = scratch_settings_file();
+        let settings = Settings {
+            glow: false,
+            ..Settings::default()
+        };
+
+        settings.save_to(&path);
+        let loaded = Settings::load_from(&path);
+
+        assert!(!loaded.glow);
+        let _ = std::fs::remove_dir_all(path.parent().expect("settings directory"));
     }
 
     fn read_back(path: &Path) -> serde_json::Value {

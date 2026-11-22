@@ -1064,10 +1064,10 @@ fn summary(p: &Period, elapsed: Duration) -> String {
     let _ = write!(out, " g_ssao={:.3}", p.gpu_ssao / gpu_n);
     // the contact shadows alone (inside g_effects)
     let _ = write!(out, " g_contact={:.3}", p.gpu_contact / gpu_n);
-    // the soft sun shadows alone (inside g_effects)
-    let _ = write!(out, " g_soft={:.3}", p.gpu_soft / gpu_n);
     // the volumetric clouds' compute alone (inside g_terrain_sky; 0 while off)
     let _ = write!(out, " g_clouds={:.3}", p.gpu_clouds / gpu_n);
+    // the soft sun shadows alone (inside g_effects)
+    let _ = write!(out, " g_soft={:.3}", p.gpu_soft / gpu_n);
     // the bloom levels alone (inside g_post)
     let _ = write!(out, " g_bloom={:.3}", p.gpu_bloom / gpu_n);
     let _ = write!(out, " | shadow_path={}", aurora_render::shadow_cull::path_name(p.shadow_path));
@@ -1202,7 +1202,7 @@ mod tests {
         assert!(l.contains(" r_finish=0.00 ") && l.contains(" g_objects=0.000 "), "{l}");
         assert!(
             l.contains(
-                " g_depth=0.000 g_depth_msaa=0.000 g_ssao=0.000 g_contact=0.000 g_soft=0.000 g_clouds=0.000 g_bloom=0.000 | shadow_path="
+                " g_depth=0.000 g_depth_msaa=0.000 g_ssao=0.000 g_contact=0.000 g_clouds=0.000 g_soft=0.000 g_bloom=0.000 | shadow_path="
             ),
             "{l}"
         );

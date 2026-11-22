@@ -312,22 +312,18 @@ impl World {
     /// Returns whether the offer was answered without a prompt.
     /// Decides once whether the notice `id` names the resident `from` it is
     /// about (`rlva_names_giver`), and returns it: the notice keeps the name
-    /// from then on, or loses it now for their stand-in
-    /// (inventory_offer_handler, indra/newview/llimprocessing.cpp).
+    /// from then on, or the stand-in it was written with
+    /// (inventory_offer_handler, indra/newview/llimprocessing.cpp). The
+    /// rest of its text stays as it was given: UserGiveItem and
+    /// ObjectGiveItem go through no RlvUtil::filterNames nor filterLocation,
+    /// so the name of the item, and of the object that gives it, keep the
+    /// names and the places they hold.
     pub(super) fn name_giver_notice(&mut self, id: u64, from: Uuid, from_object: bool) -> bool {
         let named = self.rlva_names_giver(from, from_object);
         if named {
             self.notifications.name_resident(id);
-        } else {
-            let filter = self.rlva_text_filter(false);
-            if let Some(n) = self.notifications.list.iter_mut().find(|n| n.id == id) {
-                filter.redact_notice(&self.social.avatar_names, &mut n.title, Some(&mut n.body), &mut n.name_links);
-                // the `rlvanonym` link is never one: the stand-in stays
-                // plain text once the restriction is lifted too
-                n.name_links
-                    .retain(|link| link.target != crate::world::notification_history::NameTarget::Avatar(from));
-            }
         }
+        self.notifications.keep_as_written(id);
         named
     }
 
@@ -406,7 +402,7 @@ impl World {
             let name = if self.notifications.names_resident(id) {
                 super::teleport_invites::agent_link(im.from_agent_id)
             } else {
-                self.rlva_anonymous(im.from_agent_id).display_name.clone()
+                self.rlva_anonymous_from(im.from_agent_id, &im.from_name).display_name.clone()
             };
             aurora_i18n::tr!(
                 "received-auto-accepted-resident",
@@ -500,7 +496,7 @@ impl World {
         let (giver, logged) = if named {
             (from.to_string(), super::teleport_invites::agent_link(im.from_agent_id))
         } else {
-            let stand_in = self.rlva_anonymous(im.from_agent_id).display_name.clone();
+            let stand_in = self.rlva_anonymous_from(im.from_agent_id, &im.from_name).display_name.clone();
             (stand_in.clone(), stand_in)
         };
         let title = aurora_i18n::tr!("world-mod-gives-you", from = giver, what = item_label(&im.message));
@@ -819,6 +815,51 @@ mod tests {
         }
     }
 
+    /// UserGiveItem and ObjectGiveItem are written once, with the name of
+    /// who gives or their stand-in, and go through no RlvUtil::filterNames
+    /// nor filterLocation (inventory_offer_handler,
+    /// indra/newview/llimprocessing.cpp): under `@shownames` and `@showloc`
+    /// the name of the item, and of the object that gives it, keep the
+    /// names and the places they hold.
+    #[test]
+    fn an_offer_notice_hides_who_gives_and_rewrites_nothing_else() {
+        const ITEM_NAME: &str = "Jane Doe and the map of Secret Parcel";
+        const BOX_NAME: &str = "Jane Doe and the box at Secret Parcel";
+        for task in [false, true] {
+            let root = temp();
+            let mut w = hiding_names(&root);
+            around(&mut w);
+            w.parcel_name = "Secret Parcel".into();
+            w.rlva_console_input("@showloc=n");
+            w.refresh_rlva_privacy();
+            let hidden = w.rlva_filter_text("the map of Secret Parcel").into_owned();
+            assert!(!hidden.contains("Secret Parcel"), "a text loses the place: {hidden}");
+            let dialog = if task { im::TASK_INVENTORY_OFFERED } else { im::INVENTORY_OFFERED };
+            let mut gift = offer(dialog, ITEM_NAME);
+            if task {
+                gift.from_name = BOX_NAME.into();
+            }
+            w.on_im(gift);
+            for frame in 0..2 {
+                let case = format!("task {task}, frame {frame}");
+                let n = &w.notifications.list[0];
+                let text = format!("{} / {}", n.title, n.body);
+                assert!(text.contains(ITEM_NAME), "{case}: {text}");
+                if task {
+                    assert_eq!(n.title, BOX_NAME, "{case}");
+                    assert!(n.body.contains(BOX_NAME), "{case}: {}", n.body);
+                }
+                // who gives is their stand-in, in plain text
+                let rest = text.replace(ITEM_NAME, "").replace(BOX_NAME, "");
+                assert!(!rest.contains("Jane"), "{case}: {text}");
+                assert!(n.name_links.is_empty(), "{case}");
+                w.refresh_task_inventory_offers();
+                w.refresh_rlva_privacy();
+            }
+            clean(&w, &root);
+        }
+    }
+
     /// RlvUIEnabler::hasOpenProfile (indra/newview/rlvui.cpp): a giver
     /// around us whose profile is open is named; the owner of an object
     /// that gives is not.
@@ -1024,7 +1065,16 @@ mod tests {
             if blocked {
                 w.block(JANE, "Jane Doe", super::super::mutes::MuteType::Agent).unwrap();
             } else {
+                // a gift for #RLV waits for its answer while #RLV exists
+                // (RlvInventory::isGiveToRLVOffer)
                 w.rlva_configure(true);
+                w.inventory.created_folders(vec![InvFolder {
+                    id: Uuid::from_u128(0x31),
+                    parent: w.inventory.root,
+                    type_default: -1,
+                    name: "#RLV".into(),
+                    ..Default::default()
+                }]);
             }
             w.chat.clear();
             w.ui_sounds.clear();
@@ -1062,29 +1112,48 @@ mod tests {
         }
         clean(&w, &root);
 
+        // RlvInventory::isGiveToRLVOffer (rlvinventory.cpp): only while
+        // giving to #RLV is allowed and #RLV exists; otherwise the offer is
+        // accepted like any other.
         for enabled in [false, true] {
             for allow_filing in [false, true] {
-                let root = temp();
-                let mut w = world(&root);
-                w.inventory_offers.auto_accept = true;
-                w.inventory_offers.auto_accept_chat = false;
-                w.inventory_offers.auto_accept_notify = false;
-                w.rlva_configure(enabled);
-                w.rlva.preferences.allow_shared_offers = allow_filing;
-                for dialog in [im::INVENTORY_OFFERED, im::TASK_INVENTORY_OFFERED] {
-                    let task = dialog == im::TASK_INVENTORY_OFFERED;
-                    let mut gift = offer(dialog, if task { "'#RLV/~Wardrobe/Cuffs'" } else { "#RLV/~Wardrobe/Cuffs" });
-                    gift.binary_bucket[0] = AT_CATEGORY as u8;
-                    w.on_im(gift);
-                    assert_eq!(answers(&w.take_social_commands()).is_empty(), enabled);
-                    if enabled {
-                        let id = w.notifications.list.last().expect("shared offer confirmation").id;
-                        let commands = w.respond_notification(id, Response::Accept).0;
-                        assert_eq!(answers(&commands).len(), 1);
+                for shared in [false, true] {
+                    let root = temp();
+                    let mut w = world(&root);
+                    w.inventory_offers.auto_accept = true;
+                    w.inventory_offers.auto_accept_chat = false;
+                    w.inventory_offers.auto_accept_notify = false;
+                    w.rlva_configure(enabled);
+                    w.rlva.preferences.allow_shared_offers = allow_filing;
+                    if shared {
+                        w.inventory.created_folders(vec![InvFolder {
+                            id: Uuid::from_u128(0x31),
+                            parent: w.inventory.root,
+                            type_default: -1,
+                            name: "#RLV".into(),
+                            ..Default::default()
+                        }]);
                     }
-                    assert!(w.notifications.list.is_empty());
+                    let asks = enabled && allow_filing && shared;
+                    for dialog in [im::INVENTORY_OFFERED, im::TASK_INVENTORY_OFFERED] {
+                        let task = dialog == im::TASK_INVENTORY_OFFERED;
+                        let mut gift = offer(dialog, if task { "'#RLV/~Wardrobe/Cuffs'" } else { "#RLV/~Wardrobe/Cuffs" });
+                        gift.binary_bucket[0] = AT_CATEGORY as u8;
+                        w.on_im(gift);
+                        assert_eq!(
+                            answers(&w.take_social_commands()).is_empty(),
+                            asks,
+                            "rlva {enabled}, filing {allow_filing}, #RLV {shared}, task {task}"
+                        );
+                        if asks {
+                            let id = w.notifications.list.last().expect("shared offer confirmation").id;
+                            let commands = w.respond_notification(id, Response::Accept).0;
+                            assert_eq!(answers(&commands).len(), 1);
+                        }
+                        assert!(w.notifications.list.is_empty());
+                    }
+                    clean(&w, &root);
                 }
-                clean(&w, &root);
             }
         }
     }
@@ -1322,6 +1391,7 @@ mod tests {
         w.on_im(offer(im::TASK_INVENTORY_OFFERED, "Free gift"));
         // an update before the answer is not the gift
         w.apply(aurora_net::NetEvent::InventoryUpdated {
+            bulk: false,
             folders: Vec::new(),
             items: vec![item(Uuid::from_u128(0x31), folder)],
         });
@@ -1331,6 +1401,7 @@ mod tests {
         // what the inventory already knew is not the gift
         let gift = Uuid::from_u128(0x32);
         w.apply(aurora_net::NetEvent::InventoryUpdated {
+            bulk: false,
             folders: Vec::new(),
             items: vec![item(gift, folder), item(old, folder)],
         });
@@ -1356,6 +1427,7 @@ mod tests {
         };
         let inv_root = w.inventory.root;
         w.apply(aurora_net::NetEvent::InventoryUpdated {
+            bulk: false,
             folders: vec![folder(inner, top), folder(top, inv_root)],
             items: vec![item(Uuid::from_u128(0x42), inner)],
         });

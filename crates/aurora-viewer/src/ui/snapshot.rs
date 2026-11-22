@@ -214,6 +214,9 @@ pub struct View<'a> {
     pub env: EnvView<'a>,
     /// The key that brings the free camera back (Escape by default).
     pub back_key: Option<crate::keybinds::Binding>,
+    /// RLVa holds the view (`Rlva::camera_view_held`): the free camera
+    /// switch is greyed.
+    pub free_refused: bool,
     /// The photo quality is lowered to stay within the video memory.
     pub quality_reduced: bool,
     /// The last 360° panorama made, for the 360° format's preview.
@@ -414,8 +417,7 @@ impl SnapshotUi {
             ui,
             p,
             &mut self.light,
-            (view.exposure, view.hdr),
-            view.shadows,
+            (view.exposure, view.hdr, view.shadows),
             &view.env,
             Some(view),
             out,
@@ -880,7 +882,7 @@ impl SnapshotUi {
             }
         });
         row(ui, p, aurora_i18n::tr!("photo-free-camera"), None, |ui| {
-            widgets::switch(ui, p, &mut self.free.on);
+            ui.add_enabled_ui(!view.free_refused, |ui| widgets::switch(ui, p, &mut self.free.on));
         });
         free_camera_hint(ui, p, view.back_key.as_ref());
         if widgets::action_button(
@@ -952,7 +954,7 @@ impl SnapshotUi {
             luts: &self.lut_names,
             pano: self.pano,
         };
-        self.looks.show(ui, p, s, opts, out);
+        self.looks.show(ui, p, super::looks_editor::Stack::photo(s), opts, out);
         if std::mem::take(&mut self.looks.reveal) {
             ui.scroll_to_rect(filter.with_max_y(ui.cursor().top()), Some(egui::Align::Center));
         }
@@ -1336,8 +1338,7 @@ fn light_rows(
     ui: &mut egui::Ui,
     p: &Palette,
     l: &mut crate::snapshot::light::PhotoLight,
-    (exposure, hdr): (f32, bool),
-    shadows: ShadowView,
+    (exposure, hdr, shadows): (f32, bool, ShadowView),
     env: &EnvView,
     quality: Option<&View>,
     out: &mut Vec<Action>,
@@ -2089,15 +2090,15 @@ mod tests {
             profile_posted: false,
             email: None,
             exposure: 0.0,
-            shadows: ShadowView {
-                softness: 1.0,
-                intensity: 1.0,
-                soft: false,
-            },
             shadow_quality: 0,
             ambient_occlusion: 0,
             quality_boost: false,
             hdr: true,
+            shadows: ShadowView {
+                softness: 0.25,
+                intensity: 1.0,
+                soft: false,
+            },
             env: EnvView {
                 catalog,
                 own: crate::world::eep_env::LocalView::SHARED,
@@ -2106,6 +2107,7 @@ mod tests {
                 loading: false,
             },
             back_key: None,
+            free_refused: false,
             quality_reduced: false,
             pano: None,
         }
@@ -2231,20 +2233,12 @@ mod tests {
         };
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                light_rows(
-                    ui,
-                    &p,
-                    &mut light,
-                    (1.234, true),
-                    ShadowView {
-                        softness: 1.0,
-                        intensity: 1.0,
-                        soft: true,
-                    },
-                    &env,
-                    None,
-                    &mut Vec::new(),
-                )
+                let shadows = ShadowView {
+                    softness: 1.0,
+                    intensity: 1.0,
+                    soft: true,
+                };
+                light_rows(ui, &p, &mut light, (1.234, true, shadows), &env, None, &mut Vec::new())
             });
             output.textures_delta.clear();
         }

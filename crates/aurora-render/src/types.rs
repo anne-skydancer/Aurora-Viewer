@@ -1657,8 +1657,8 @@ pub struct RainLook {
     /// Deep snow's reach around my avatar at High weather quality (m, 10 to
     /// 40); Low and Medium keep their share of it (two thirds, 13/15).
     pub deep_reach: f32,
-    /// How deep snow lies in the open at least (0..1): a region's weather
-    /// gives its whole history (who comes in late sees what has built up).
+    /// How deep snow lies in the open at least (0..1): `AURORA_SNOW_LYING`'s
+    /// floor for demo captures, else 0.
     pub snow_lying: f32,
     /// Snow lying on the ground is drawn ("Snow settles"), whatever falls
     /// now: off, none at once, nor while what lay melts after the weather
@@ -1911,6 +1911,9 @@ pub struct FrameParams {
     /// Volumetric clouds in the place of the Legacy Viewer's flat layer
     /// (clouds.rs); None: the Legacy layer, with nothing else running.
     pub clouds: Option<CloudsFrame>,
+    /// Planet curvature (curvature.rs, Aurora's own): the planet's radius
+    /// in metres; None: the flat regions, as the Legacy Viewer draws them.
+    pub curvature: Option<f32>,
 }
 
 /// The volumetric clouds' inputs that are not in the sky: where the camera

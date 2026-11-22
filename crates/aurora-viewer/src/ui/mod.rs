@@ -138,6 +138,7 @@ pub mod rlva_selftest;
 pub mod script_queue;
 pub mod scripts;
 pub mod search;
+pub mod second_camera;
 pub mod shape;
 pub mod sheet;
 pub mod signup;
@@ -164,12 +165,14 @@ pub mod update;
 pub mod viewfinder;
 pub mod voice_tag;
 pub mod wearable;
+pub mod weather_window;
 pub mod web_browser;
 pub mod web_view;
 pub mod widgets;
 
 #[cfg(test)]
 mod uri_restore_tests;
+pub mod world_look;
 pub mod worldmap;
 
 /// Which floating panels are open.
@@ -192,6 +195,8 @@ pub struct Panels {
     /// The photo window is in its 360° format (`SnapshotUi::pano`, which the
     /// app copies here for the toolbar's button).
     pub snapshot_pano: bool,
+    /// The World filters window (`ui/world_look.rs`).
+    pub world_look: bool,
     pub people: bool,
     pub minimap: bool,
     /// World map (Ctrl+M).
@@ -216,6 +221,7 @@ pub struct Panels {
     pub appearance: bool,
     pub avatar_studio: bool,
     pub ao: bool,
+    pub ao_mini: bool,
     pub people_tab: u8,
     /// The torn-off Contacts window (ContactsTornOff).
     pub contacts: bool,
@@ -258,6 +264,9 @@ pub struct Panels {
     pub quick_prefs: bool,
     /// The Director (toolbar `director`): its window and its timeline.
     pub director: bool,
+    /// The second camera (View › Second camera, toolbar `second_camera`):
+    /// our avatar seen by a camera of its own (ui/second_camera.rs).
+    pub second_camera: bool,
     /// "Voice controls" (toolbar): who is in the voice channel and who speaks.
     pub voice_controls: bool,
     /// The pose stand (toolbar `pose_stand`).
@@ -300,6 +309,7 @@ impl Panels {
             wearable_favorites: false,
             snapshot: false,
             snapshot_pano: false,
+            world_look: false,
             people: settings.show_people,
             minimap: settings.show_minimap,
             world_map: false,
@@ -318,6 +328,7 @@ impl Panels {
             appearance: settings.show_appearance,
             avatar_studio: false,
             ao: settings.show_ao,
+            ao_mini: false,
             people_tab: settings.people_tab.min(1),
             // FSFloaterContacts::onOpen: torn off, Contacts is its own window
             // (ContactsTornOff). Closing that window puts the flag back to
@@ -346,6 +357,7 @@ impl Panels {
             phototools: false,
             quick_prefs: false,
             director: false,
+            second_camera: false,
             voice_controls: false,
             pose_stand: false,
             omnifilter: false,

@@ -10,9 +10,10 @@
 //! pages at once), counted for the sidebar's chips (`Count`), put back to
 //! their default (`Reset`), or listed for the tests (`Collect`).
 
-use super::{OptionsResult, OptionsUi, Page};
+use super::{OptionsResult, OptionsUi, Page, RowFlash, with_setting_labels};
 use crate::settings::Settings;
 use crate::theme::Palette;
+use aurora_i18n::UiUpper;
 use egui::{Rect, Sense, Shape, Vec2, pos2, vec2};
 
 /// What the rows do in this pass.
@@ -115,11 +116,11 @@ impl<M: Fn(&Settings, &Settings) -> bool, R: Fn(&mut Settings, &Settings)> Track
 
 /// `field!(lookat.private)`: the [`F`] of a setting.
 macro_rules! field {
-    ($($f:ident).+) => {
+    ($first:ident $(.$rest:ident)*) => {
         $crate::ui::options::cx::F {
-            path: stringify!($($f).+),
-            get: |s: &$crate::settings::Settings| &s.$($f).+,
-            get_mut: |s: &mut $crate::settings::Settings| &mut s.$($f).+,
+            path: concat!(stringify!($first) $(, ".", stringify!($rest))*),
+            get: |s: &$crate::settings::Settings| &s.$first $(.$rest)*,
+            get_mut: |s: &mut $crate::settings::Settings| &mut s.$first $(.$rest)*,
         }
     };
 }
@@ -169,8 +170,8 @@ pub(super) fn words(query: &str) -> Vec<String> {
 }
 
 /// Whether every word of the search starts a word of `text`, as a name is
-/// typed ("ombre" finds "Ombres", not "Nombre"). Japanese writes without
-/// spaces, so a word with kana or kanji is found anywhere in the text, as
+/// typed ("ombre" finds "Ombres", not "Nombre"). A query with kana, Han
+/// or Hangul is found anywhere in the text, including inside compounds, as
 /// the Legacy Viewer finds every search (ll::prefs::SearchableItem::
 /// hightlightAndHide, llsearchableui.cpp): 区画 finds 常に表示する区画.
 pub(super) fn found(text: &str, words: &[String]) -> bool {
@@ -184,13 +185,15 @@ pub(super) fn found(text: &str, words: &[String]) -> bool {
     })
 }
 
-/// A search word found inside a word: one with kana or kanji.
+/// Scripts for which a search term may start inside a word.
 fn anywhere(word: &str) -> bool {
     word.chars().any(|c| {
         matches!(c,
             '\u{3040}'..='\u{30FF}' // hiragana, katakana
             | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' // kanji
-            | '\u{FF66}'..='\u{FF9F}') // half-width katakana
+            | '\u{FF66}'..='\u{FF9F}' // half-width katakana
+            | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' // Hangul jamo
+            | '\u{A960}'..='\u{A97F}' | '\u{AC00}'..='\u{D7FF}') // Hangul syllables and extended jamo
     })
 }
 
@@ -317,9 +320,13 @@ pub(super) struct Cx<'a> {
     pub drawn: usize,
     /// The rows of the group are greyed (`greyed`).
     greyed: bool,
+    /// A conditional branch retained for search and counting, but hidden on its page.
+    hidden_on_page: bool,
     /// Another page's rows drawn here too (`borrow`): the settings they
     /// edit; the page's other rows, groups and notes are skipped.
     pick: Option<Vec<&'static str>>,
+    // Reuse the row's path buffer across this page pass.
+    row_paths: Vec<&'static str>,
     pub collected: Vec<(Page, &'static str)>,
     /// `Mode::Collect`: each setting a row edits, with its label and hint.
     pub described: Vec<(&'static str, String, String)>,
@@ -391,7 +398,9 @@ impl<'a> Cx<'a> {
             rows_seen: 0,
             drawn: 0,
             greyed: false,
+            hidden_on_page: false,
             pick: None,
+            row_paths: Vec::new(),
             collected: Vec::new(),
             described: Vec::new(),
             changed: false,
@@ -458,8 +467,11 @@ impl<'a> Cx<'a> {
     pub fn conditional(&mut self, visible: bool, body: impl FnOnce(&mut Self)) {
         if self.mode != Mode::Show || visible {
             let before = self.greyed;
+            let hidden = self.hidden_on_page;
             self.greyed |= !visible;
+            self.hidden_on_page |= !visible;
             body(self);
+            self.hidden_on_page = hidden;
             self.greyed = before;
         }
     }
@@ -645,6 +657,17 @@ impl<'a> Cx<'a> {
                 return false;
             }
             Mode::Count => {
+                if !self.hidden_on_page
+                    && self.st.pending_setting.as_deref().is_some_and(|wanted| {
+                        self.row_paths.clear();
+                        t.paths(&mut self.row_paths);
+                        self.row_paths.contains(&wanted) && with_setting_labels(|labels| labels.get(wanted).is_some_and(Option::is_some))
+                    })
+                {
+                    self.st.go_to = Some((self.page, self.tab, Some(RowFlash::Link(id))));
+                    self.st.open_parent = self.parent.as_ref().map(|p| p.id);
+                    self.st.pending_setting = None;
+                }
                 if modified {
                     Counts::add(&mut self.counts.modified, self.page);
                 }
@@ -673,7 +696,7 @@ impl<'a> Cx<'a> {
                 .is_some_and(|(page, tab, l)| page == self.page && tab == self.tab && l == label)
         {
             self.st.reveal = None;
-            self.st.flash = Some((id, self.ui.input(|i| i.time)));
+            self.st.flash = Some((RowFlash::GoTo(id), self.ui.input(|i| i.time)));
             self.st.flash_scroll = true;
         }
         if self.group_untitled {
@@ -893,7 +916,7 @@ impl<'a> Cx<'a> {
     fn group_title(&mut self, title: &str) {
         let p = self.p;
         let font = egui::FontId::new(11.0, crate::ui::fonts::semibold(self.ui.ctx()));
-        let galley = self.ui.painter().layout_no_wrap(title.to_uppercase(), font, p.muted);
+        let galley = self.ui.painter().layout_no_wrap(title.ui_upper(), font, p.muted);
         let (rect, _) = self.ui.allocate_exact_size(vec2(self.ui.available_width(), 26.0), Sense::hover());
         let text_left = rect.left() + 4.0;
         crate::ui::widgets::paint_row_text(self.ui.painter(), galley.clone(), text_left, rect.center().y, p.muted);
@@ -1102,7 +1125,34 @@ impl<'a> Cx<'a> {
         if !section_body {
             self.ui.painter().galley(label_pos, galley.clone(), ink);
         }
-        if !hint.is_empty() {
+        // A section body has no separate label: its control owns this space.
+        let link_path = if section_body || self.hidden_on_page {
+            None
+        } else {
+            self.row_paths.clear();
+            t.paths(&mut self.row_paths);
+            with_setting_labels(|labels| {
+                self.row_paths
+                    .iter()
+                    .copied()
+                    .find(|path| labels.get(*path).is_some_and(Option::is_some))
+            })
+        };
+        if let Some(path) = link_path {
+            let label_response = self.ui.interact(label_rect, id.with("label"), Sense::click());
+            let label_response = if hint.is_empty() {
+                label_response
+            } else {
+                label_response.on_hover_text(hint)
+            };
+            crate::ui::menu::context_menu(&label_response, &p, |ui| {
+                if crate::ui::menu::item(ui, &p, "link-filled", aurora_i18n::tr!("ui-options-copy-setting-link"))
+                    && let Some(url) = crate::slapp::preference_link(path)
+                {
+                    ui.ctx().copy_text(url);
+                }
+            });
+        } else if !hint.is_empty() {
             self.ui.interact(label_rect, id.with("label"), Sense::hover()).on_hover_text(hint);
         }
         let mut after = label_rect.right() + 6.0;
@@ -1125,7 +1175,7 @@ impl<'a> Cx<'a> {
             let ink = if resp.hovered() { p.ink } else { p.muted };
             crate::ui::widgets::paint_glyph(self.ui.painter(), "arrow-right", go.center(), 13.0, ink);
             if resp.clicked() {
-                self.st.go_to = Some((self.page, self.tab, Some(id)));
+                self.st.go_to = Some((self.page, self.tab, Some(RowFlash::GoTo(id))));
                 self.st.open_parent = self.parent.as_ref().map(|p| p.id);
             }
         }
@@ -1198,12 +1248,12 @@ impl<'a> Cx<'a> {
 
         // the row's face: hovered, or lit a moment after "Go to"
         let hovered = self.ui.rect_contains_pointer(row) && self.ui.is_enabled();
-        let flash = self.st.flash.filter(|(f, _)| *f == id).map(|(_, at)| at);
+        let flash = self.st.flash.filter(|(target, _)| target.id() == id);
         let now = ctx.input(|i| i.time);
         let radius = self.ui.visuals().widgets.inactive.corner_radius;
-        if let Some(at) = flash {
+        if let Some((target, at)) = flash {
             let age = (now - at) as f32;
-            if age < 1.8 {
+            if let Some(strength) = target.strength(age) {
                 // asked again for a quarter of a second: a window opened by
                 // "Preferences…" lays out its first frames without keeping
                 // a scroll, which left a row far down the page out of sight
@@ -1211,7 +1261,6 @@ impl<'a> Cx<'a> {
                     self.ui.scroll_to_rect(row, Some(egui::Align::Center));
                     self.st.flash_scroll = age < 0.25;
                 }
-                let strength = (1.0 - age / 1.8).clamp(0.0, 1.0) * 0.42;
                 self.ui
                     .painter()
                     .set(background, Shape::rect_filled(row, radius, p.violet.gamma_multiply(strength)));
@@ -1253,6 +1302,16 @@ mod tests {
         assert!(!found("Nombre", &words("ombre")));
         assert_eq!(found_in("Nombre", &words("ombre")), None);
         assert_eq!(found_in("Les ombres", &words("ombre")), Some((4, 9)));
+    }
+
+    #[test]
+    fn chinese_and_korean_search_match_and_highlight_inside_compounds() {
+        for (label, query) in [("图形设置", "设置"), ("圖形設定", "設定"), ("그래픽설정", "설정")] {
+            let terms = words(query);
+            assert!(found(label, &terms));
+            let (start, end) = found_in(label, &terms).expect("highlight");
+            assert_eq!(&label[start..end], query);
+        }
     }
 
     #[test]

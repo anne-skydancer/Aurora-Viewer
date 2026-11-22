@@ -413,6 +413,7 @@ fn emit(sh: &Shared, ev: NetEvent) {
 /// for the items then find their folder instead of Lost And Found.
 fn announce_folder(events: &crate::EventSender, folder: crate::inventory::InvFolder) {
     let _ = events.send(NetEvent::InventoryUpdated {
+        bulk: false,
         folders: vec![folder],
         items: Vec::new(),
     });
@@ -3399,7 +3400,7 @@ impl Session<'_> {
                 .post(&url)
                 .header("Content-Type", "application/llsd+xml")
                 .header("Accept", "application/llsd+xml")
-                .header("Accept-Language", aurora_i18n::language())
+                .header("Accept-Language", aurora_i18n::grid_language())
                 .body(aurora_llsd::to_xml(&body))
                 .send()
                 .await;
@@ -4312,6 +4313,12 @@ impl Session<'_> {
                     &format!("failed (TeleportFailed: {reason})"),
                     &self.sh.stats,
                 );
+                // handle_teleport_access_blocked: a refusal for the rating
+                let alert = &b["AlertInfo"][0];
+                let extra = crate::teleport_access::extra_bytes(&alert["ExtraParams"]);
+                if let Some(blocked) = crate::teleport_access::from_alert_info(alert["Message"].as_str(), &extra) {
+                    emit(self.sh, NetEvent::TeleportAccessBlocked(blocked));
+                }
                 emit(self.sh, NetEvent::TeleportFailed { reason });
             }
             "DisableSimulator" => {
@@ -5516,6 +5523,7 @@ impl Session<'_> {
                 emit(
                     self.sh,
                     NetEvent::InventoryUpdated {
+                        bulk: false,
                         folders: Vec::new(),
                         items,
                     },
@@ -5590,7 +5598,14 @@ impl Session<'_> {
                     })
                     .collect();
                 let delivered = folders.iter().map(|folder: &crate::inventory::InvFolder| folder.id).collect();
-                emit(self.sh, NetEvent::InventoryUpdated { folders, items });
+                emit(
+                    self.sh,
+                    NetEvent::InventoryUpdated {
+                        folders,
+                        items,
+                        bulk: true,
+                    },
+                );
                 if !m.agent_data.transaction_id.is_nil() {
                     emit(
                         self.sh,
@@ -5696,6 +5711,14 @@ impl Session<'_> {
                 &format!("failed (TeleportFailed: {})", field_str(&m.info.reason)),
                 &self.sh.stats,
             );
+            // handle_teleport_access_blocked: a refusal for the rating
+            if let Some(blocked) = m
+                .alert_info
+                .first()
+                .and_then(|info| crate::teleport_access::from_alert_info(&field_str(&info.message), &info.extra_params))
+            {
+                emit(self.sh, NetEvent::TeleportAccessBlocked(blocked));
+            }
             emit(
                 self.sh,
                 NetEvent::TeleportFailed {

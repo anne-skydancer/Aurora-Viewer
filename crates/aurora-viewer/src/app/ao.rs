@@ -44,6 +44,8 @@ impl App {
         }
         if self.demo && self.frame_count == 360 {
             match self.ao_demo.as_deref() {
+                // the Mini AO window alone, without the manager
+                Some("mini") => self.panels.ao = false,
                 Some(mode) if mode.starts_with("quick") => {
                     self.panels.ao = false;
                     self.toolbar_ui.ao_quick.open = true;
@@ -300,7 +302,7 @@ impl App {
             .index_of_uuid(&self.world.agent_id)
             .and_then(|i| self.world.objects.get(i))
             .is_some_and(|o| o.parent_id != 0);
-        let water = self.movement_water.unwrap_or_else(|| self.world.main_water_height());
+        let water = self.world.main_water_height();
         let mut swim_input = self.input;
         swim_input.run |= self.always_run;
         if self.demo
@@ -493,6 +495,14 @@ impl App {
                     migration.source.reload(&mut self.world.inventory);
                     migration.message.clear();
                 }
+            }
+            Action::FinishRecovery(recovery) => match inventory::finish_recovery(&self.world.inventory, recovery) {
+                Ok(change) => self.apply_ao_action(Action::Edit(change, None)),
+                Err(reason) => self.ao_ui.message = reason,
+            },
+            Action::ShowRecovery(id) => {
+                self.inventory_ui.show_folder(&self.world.inventory, id);
+                self.panels.inventory = true;
             }
             Action::Edit(change, select) => self.queue_ao_edit(change, select, None),
             Action::EditContainer(change, target) => self.queue_ao_edit(change, None, Some(target)),
